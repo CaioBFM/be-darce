@@ -1,0 +1,393 @@
+name: bedarce
+
+services:
+  ingress:
+    image: traefik:v3.6
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=bedarce-edge-net
+      - --entrypoints.web.address=:8080
+    ports:
+      - "${GATEWAY_HOST_PORT}:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - edge-net
+    restart: unless-stopped
+
+  db-usuarios:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB_USUARIOS}
+    volumes:
+      - pg_usuarios_data:/var/lib/postgresql/data
+    networks:
+      - usuarios-db-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
+  db-atendimento:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB_ATENDIMENTO}
+    volumes:
+      - pg_atendimento_data:/var/lib/postgresql/data
+    networks:
+      - atendimento-db-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
+  db-gamificacao-escrita:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB_GAMIFICACAO}
+    volumes:
+      - pg_gamificacao_data:/var/lib/postgresql/data
+    networks:
+      - gamificacao-escrita-db-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
+  db-gamificacao-leitura:
+    image: mongo:7
+    volumes:
+      - mongo_gamificacao_data:/data/db
+    networks:
+      - gamificacao-leitura-db-net
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
+  db-comunidade:
+    image: mongo:7
+    volumes:
+      - mongo_comunidade_data:/data/db
+    networks:
+      - comunidade-db-net
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
+  usuarios-service:
+    build:
+      context: .
+      dockerfile: services/usuarios-service/Dockerfile
+    environment:
+      PORT: ${PORT_USUARIOS}
+      DB_HOST: db-usuarios
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DB_USUARIOS}
+    expose:
+      - "${PORT_USUARIOS}"
+    depends_on:
+      db-usuarios:
+        condition: service_healthy
+    networks:
+      - app-net
+      - usuarios-db-net
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  atendimento-service:
+    build:
+      context: .
+      dockerfile: services/atendimento-service/Dockerfile
+    environment:
+      PORT: ${PORT_ATENDIMENTO}
+      DB_HOST: db-atendimento
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DB_ATENDIMENTO}
+    expose:
+      - "${PORT_ATENDIMENTO}"
+    depends_on:
+      db-atendimento:
+        condition: service_healthy
+    networks:
+      - app-net
+      - atendimento-db-net
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  gamificacao-escrita-service:
+    build:
+      context: .
+      dockerfile: services/gamificacao-escrita-service/Dockerfile
+    environment:
+      PORT: ${PORT_GAMIFICACAO_ESCRITA}
+      DB_HOST: db-gamificacao-escrita
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DB_GAMIFICACAO}
+    expose:
+      - "${PORT_GAMIFICACAO_ESCRITA}"
+    depends_on:
+      db-gamificacao-escrita:
+        condition: service_healthy
+    networks:
+      - app-net
+      - gamificacao-escrita-db-net
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5002/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  gamificacao-leitura-service:
+    build:
+      context: .
+      dockerfile: services/gamificacao-leitura-service/Dockerfile
+    environment:
+      PORT: ${PORT_GAMIFICACAO_LEITURA}
+      MONGO_URI: ${MONGO_URI_GAMIFICACAO}
+    expose:
+      - "${PORT_GAMIFICACAO_LEITURA}"
+    depends_on:
+      db-gamificacao-leitura:
+        condition: service_healthy
+    networks:
+      - app-net
+      - gamificacao-leitura-db-net
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5003/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  comunidade-service:
+    build:
+      context: .
+      dockerfile: services/comunidade-service/Dockerfile
+    environment:
+      PORT: ${PORT_COMUNIDADE}
+      MONGO_URI: ${MONGO_URI_COMUNIDADE}
+    expose:
+      - "${PORT_COMUNIDADE}"
+    depends_on:
+      db-comunidade:
+        condition: service_healthy
+    networks:
+      - app-net
+      - comunidade-db-net
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5004/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  saga-orquestrador:
+    build:
+      context: .
+      dockerfile: services/saga-orquestrador/Dockerfile
+    environment:
+      PORT: ${PORT_SAGA}
+      GATEWAY_INTERNAL_URL: http://gateway:${GATEWAY_INTERNAL_PORT}
+    expose:
+      - "${PORT_SAGA}"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    networks:
+      - app-net
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5005/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  bff-portal:
+    build:
+      context: .
+      dockerfile: bffs/bff-portal/Dockerfile
+    environment:
+      PORT: ${PORT_BFF_PORTAL}
+      GATEWAY_INTERNAL_URL: http://gateway:${GATEWAY_INTERNAL_PORT}
+    expose:
+      - "${PORT_BFF_PORTAL}"
+    depends_on:
+      usuarios-service:
+        condition: service_healthy
+    networks:
+      - app-net
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  bff-admin:
+    build:
+      context: .
+      dockerfile: bffs/bff-admin/Dockerfile
+    environment:
+      PORT: ${PORT_BFF_ADMIN}
+      GATEWAY_INTERNAL_URL: http://gateway:${GATEWAY_INTERNAL_PORT}
+    expose:
+      - "${PORT_BFF_ADMIN}"
+    depends_on:
+      atendimento-service:
+        condition: service_healthy
+    networks:
+      - app-net
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    environment:
+      PORT: 8080
+      INTERNAL_PORT: ${GATEWAY_INTERNAL_PORT}
+      BFF_PORTAL_URL: http://bff-portal:${PORT_BFF_PORTAL}
+      BFF_ADMIN_URL: http://bff-admin:${PORT_BFF_ADMIN}
+      PORT_USUARIOS: ${PORT_USUARIOS}
+      PORT_ATENDIMENTO: ${PORT_ATENDIMENTO}
+      PORT_GAMIFICACAO_ESCRITA: ${PORT_GAMIFICACAO_ESCRITA}
+      PORT_GAMIFICACAO_LEITURA: ${PORT_GAMIFICACAO_LEITURA}
+      PORT_COMUNIDADE: ${PORT_COMUNIDADE}
+      PORT_SAGA: ${PORT_SAGA}
+    expose:
+      - "8080"
+      - "${GATEWAY_INTERNAL_PORT}"
+    depends_on:
+      bff-portal:
+        condition: service_healthy
+      bff-admin:
+        condition: service_healthy
+    networks:
+      - edge-net
+      - app-net
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=bedarce-edge-net
+      - traefik.http.routers.gateway-portal.rule=PathPrefix(`/portal/v1`)
+      - traefik.http.routers.gateway-portal.entrypoints=web
+      - traefik.http.routers.gateway-portal.priority=100
+      - traefik.http.routers.gateway-admin.rule=PathPrefix(`/admin/v1`)
+      - traefik.http.routers.gateway-admin.entrypoints=web
+      - traefik.http.routers.gateway-admin.priority=100
+      - traefik.http.routers.gateway-health.rule=Path(`/health`)
+      - traefik.http.routers.gateway-health.entrypoints=web
+      - traefik.http.routers.gateway-health.priority=100
+      - traefik.http.services.gateway.loadbalancer.server.port=8080
+    healthcheck:
+      test: ["CMD", "node", "-e", "Promise.all([fetch('http://127.0.0.1:8080/health'),fetch('http://127.0.0.1:8081/health')]).then(r=>process.exit(r.every(x=>x.ok)?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  frontend-portal:
+    build:
+      context: .
+      dockerfile: frontends/portal/Dockerfile
+    expose:
+      - "80"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    networks:
+      - edge-net
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=bedarce-edge-net
+      - traefik.http.routers.frontend-portal.rule=Host(`localhost`)
+      - traefik.http.routers.frontend-portal.entrypoints=web
+      - traefik.http.routers.frontend-portal.priority=1
+      - traefik.http.services.frontend-portal.loadbalancer.server.port=80
+    restart: unless-stopped
+
+  frontend-admin:
+    build:
+      context: .
+      dockerfile: frontends/admin/Dockerfile
+    expose:
+      - "80"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    networks:
+      - edge-net
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=bedarce-edge-net
+      - traefik.http.routers.frontend-admin.rule=Host(`admin.localhost`)
+      - traefik.http.routers.frontend-admin.entrypoints=web
+      - traefik.http.routers.frontend-admin.priority=1
+      - traefik.http.services.frontend-admin.loadbalancer.server.port=80
+    restart: unless-stopped
+
+networks:
+  edge-net:
+    name: bedarce-edge-net
+  app-net:
+    name: bedarce-app-net
+  usuarios-db-net:
+    name: bedarce-usuarios-db-net
+    internal: true
+  atendimento-db-net:
+    name: bedarce-atendimento-db-net
+    internal: true
+  gamificacao-escrita-db-net:
+    name: bedarce-gamificacao-escrita-db-net
+    internal: true
+  gamificacao-leitura-db-net:
+    name: bedarce-gamificacao-leitura-db-net
+    internal: true
+  comunidade-db-net:
+    name: bedarce-comunidade-db-net
+    internal: true
+
+volumes:
+  pg_usuarios_data:
+  pg_atendimento_data:
+  pg_gamificacao_data:
+  mongo_gamificacao_data:
+  mongo_comunidade_data:

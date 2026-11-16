@@ -3,9 +3,10 @@
 **/dist/
 **/build/
 
-# Variáveis de ambiente
-.env
-!.env.example
+# Variáveis locais; os exemplos sem credenciais permanecem versionados.
+**/.env
+**/.env.*
+!**/.env.example
 
 # Logs e arquivos do sistema
 npm-debug.log*

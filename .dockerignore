@@ -1,19 +1,14 @@
-# Dependências e builds locais
+# Build context is the repository root for every image.
 **/node_modules
 **/dist
 **/build
-
-# Arquivos de ambiente e sensíveis
-.env
-!.env.example
-
-# Controle de versão e documentação que não vão para o container
+**/.env
+**/.env.*
+!**/.env.example
 .git
 .gitignore
 README.md
 docs/
 k8s/
-
-# Logs e caches
-npm-debug.log
-.DS_Store
+**/npm-debug.log*
+**/.DS_Store
