@@ -1,0 +1,14 @@
+# Build context is the repository root for every image.
+**/node_modules
+**/dist
+**/build
+**/.env
+**/.env.*
+!**/.env.example
+.git
+.gitignore
+README.md
+docs/
+k8s/
+**/npm-debug.log*
+**/.DS_Store
