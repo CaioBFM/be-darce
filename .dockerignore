@@ -1,0 +1,19 @@
+# Dependências e builds locais
+**/node_modules
+**/dist
+**/build
+
+# Arquivos de ambiente e sensíveis
+.env
+!.env.example
+
+# Controle de versão e documentação que não vão para o container
+.git
+.gitignore
+README.md
+docs/
+k8s/
+
+# Logs e caches
+npm-debug.log
+.DS_Store
