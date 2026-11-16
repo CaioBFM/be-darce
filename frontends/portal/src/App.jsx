@@ -1,121 +1,150 @@
 import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
 import './App.css'
 
+const services = [
+  { key: 'usuarios', name: 'Usuários', database: 'PostgreSQL' },
+  { key: 'atendimento', name: 'Atendimento', database: 'PostgreSQL' },
+  { key: 'gamificacao-escrita', name: 'Gamificação — escrita', database: 'PostgreSQL' },
+  { key: 'gamificacao-leitura', name: 'Gamificação — leitura', database: 'MongoDB' },
+  { key: 'comunidade', name: 'Comunidade', database: 'MongoDB' },
+  { key: 'saga-orquestrador', name: 'Orquestrador SAGA', database: 'PostgreSQL de Atendimento (compartilhado)' },
+]
+
 function App() {
-  const [count, setCount] = useState(0)
+  const [results, setResults] = useState({})
+  const [loading, setLoading] = useState(false)
+
+  async function requestCheck(service, operation) {
+    try {
+      const response = await fetch(
+        `/portal/v1/diagnostics/services/${service.key}/${operation}`,
+      )
+      const body = await response.json()
+      return { ...body, httpStatus: response.status }
+    } catch (error) {
+      return {
+        status: 'error',
+        message: 'Não foi possível alcançar o Gateway.',
+        detail: error.message,
+      }
+    }
+  }
+
+  async function checkOne(service, operation) {
+    const key = `${service.key}:${operation}`
+    setLoading(true)
+    const result = await requestCheck(service, operation)
+    setResults((current) => ({ ...current, [key]: result }))
+    setLoading(false)
+  }
+
+  async function checkAll() {
+    setLoading(true)
+    const checks = await Promise.all(
+      services.flatMap((service) =>
+        ['health', 'db'].map(async (operation) => [
+          `${service.key}:${operation}`,
+          await requestCheck(service, operation),
+        ]),
+      ),
+    )
+    setResults(Object.fromEntries(checks))
+    setLoading(false)
+  }
+
+  function renderResult(service, operation) {
+    const result = results[`${service.key}:${operation}`]
+    if (!result) return <span className="check-pending">Ainda não testado</span>
+    const ok = result.status === 'success' || result.status === 'ok'
+    if (!ok) return <span className="check-failed">{result.message}</span>
+    if (operation === 'health') {
+      return <span className="check-passed">Saudável · HTTP {result.httpStatus}</span>
+    }
+
+    const databaseResult = result.database?.timestamp
+      ? `Banco respondeu em ${result.database.responseTimeMs} ms`
+      : `Ping do banco: ${result.database?.ping ? 'OK' : 'sem resposta'}`
+    return (
+      <span className="check-passed">
+        {databaseResult} · HTTP {result.httpStatus}
+      </span>
+    )
+  }
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
+    <main className="page">
+      <header className="topbar">
+        <a className="brand" href="/" aria-label="BEDARCE início">
+          <span className="brand-mark">B</span>
+          <span>BEDARCE</span>
+        </a>
+        <span className="client-label">Portal do usuário</span>
+      </header>
+
+      <section className="hero">
+        <p className="eyebrow">APOIO, ACOLHIMENTO E RECUPERAÇÃO</p>
+        <h1>Um passo de cada vez.</h1>
+        <p className="intro">
+          Diagnóstico ponta a ponta: Portal → Gateway → BFF Portal → Gateway
+          interno → serviço → banco de dados.
+        </p>
       </section>
 
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
+      <section className="diagnostic-card" aria-live="polite">
+        <div className="card-heading">
+          <div>
+            <p className="eyebrow">CONECTIVIDADE</p>
+            <h2>Serviços e bancos de dados</h2>
+          </div>
+          <button type="button" onClick={checkAll} disabled={loading}>
+            {loading ? 'Testando…' : 'Testar todos'}
+          </button>
         </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
+
+        <div className="service-grid">
+          {services.map((service) => (
+            <article className="service-card" key={service.key}>
+              <div className="service-title">
+                <div>
+                  <h3>{service.name}</h3>
+                  <span>{service.database}</span>
+                </div>
+                <span className="service-key">{service.key}</span>
+              </div>
+              <div className="check-line">
+                <span>Serviço</span>
+                {renderResult(service, 'health')}
+                <button
+                  type="button"
+                  className="small-button"
+                  onClick={() => checkOne(service, 'health')}
+                  disabled={loading}
                 >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
+                  Testar
+                </button>
+              </div>
+              <div className="check-line">
+                <span>Banco</span>
+                {renderResult(service, 'db')}
+                <button
+                  type="button"
+                  className="small-button"
+                  onClick={() => checkOne(service, 'db')}
+                  disabled={loading}
                 >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
+                  Testar
+                </button>
+              </div>
+            </article>
+          ))}
         </div>
       </section>
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
+      <footer>
+        <span>BEDARCE · diagnóstico do Portal</span>
+        <span>Todos os testes são encaminhados pelo Gateway.</span>
+      </footer>
+    </main>
   )
 }
 
