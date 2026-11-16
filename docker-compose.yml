@@ -1,21 +1,6 @@
 name: bedarce
 
 services:
-  ingress:
-    image: traefik:v3.6
-    command:
-      - --providers.docker=true
-      - --providers.docker.exposedbydefault=false
-      - --providers.docker.network=bedarce-edge-net
-      - --entrypoints.web.address=:8080
-    ports:
-      - "${GATEWAY_HOST_PORT}:8080"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    networks:
-      - edge-net
-    restart: unless-stopped
-
   db-usuarios:
     image: postgres:16-alpine
     environment:
@@ -296,6 +281,8 @@ services:
     expose:
       - "8080"
       - "${GATEWAY_INTERNAL_PORT}"
+    ports:
+      - "${GATEWAY_HOST_PORT}:8080"
     depends_on:
       bff-portal:
         condition: service_healthy
@@ -304,19 +291,6 @@ services:
     networks:
       - edge-net
       - app-net
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=bedarce-edge-net
-      - traefik.http.routers.gateway-portal.rule=PathPrefix(`/portal/v1`)
-      - traefik.http.routers.gateway-portal.entrypoints=web
-      - traefik.http.routers.gateway-portal.priority=100
-      - traefik.http.routers.gateway-admin.rule=PathPrefix(`/admin/v1`)
-      - traefik.http.routers.gateway-admin.entrypoints=web
-      - traefik.http.routers.gateway-admin.priority=100
-      - traefik.http.routers.gateway-health.rule=Path(`/health`)
-      - traefik.http.routers.gateway-health.entrypoints=web
-      - traefik.http.routers.gateway-health.priority=100
-      - traefik.http.services.gateway.loadbalancer.server.port=8080
     healthcheck:
       test: ["CMD", "node", "-e", "Promise.all([fetch('http://127.0.0.1:8080/health'),fetch('http://127.0.0.1:8081/health')]).then(r=>process.exit(r.every(x=>x.ok)?0:1)).catch(()=>process.exit(1))"]
       interval: 10s
@@ -328,40 +302,34 @@ services:
     build:
       context: .
       dockerfile: frontends/portal/Dockerfile
+    environment:
+      VITE_GATEWAY_URL: http://gateway:8080
     expose:
-      - "80"
+      - "5173"
+    ports:
+      - "${FRONTEND_PORTAL_HOST_PORT}:5173"
     depends_on:
       gateway:
         condition: service_healthy
     networks:
       - edge-net
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=bedarce-edge-net
-      - traefik.http.routers.frontend-portal.rule=Host(`localhost`)
-      - traefik.http.routers.frontend-portal.entrypoints=web
-      - traefik.http.routers.frontend-portal.priority=1
-      - traefik.http.services.frontend-portal.loadbalancer.server.port=80
     restart: unless-stopped
 
   frontend-admin:
     build:
       context: .
       dockerfile: frontends/admin/Dockerfile
+    environment:
+      VITE_GATEWAY_URL: http://gateway:8080
     expose:
-      - "80"
+      - "5173"
+    ports:
+      - "${FRONTEND_ADMIN_HOST_PORT}:5173"
     depends_on:
       gateway:
         condition: service_healthy
     networks:
       - edge-net
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=bedarce-edge-net
-      - traefik.http.routers.frontend-admin.rule=Host(`admin.localhost`)
-      - traefik.http.routers.frontend-admin.entrypoints=web
-      - traefik.http.routers.frontend-admin.priority=1
-      - traefik.http.services.frontend-admin.loadbalancer.server.port=80
     restart: unless-stopped
 
 networks:
