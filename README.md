@@ -577,6 +577,77 @@ bedarce/
 └── README.md
 ```
 
+## Conteinerização com Docker Compose
+
+Conteinerização empacota cada aplicação com suas dependências em uma imagem Docker, que pode ser executada em um container isolado, na qual o Docker Compose descreve os containers, suas configurações, redes e volumes em `docker-compose.yml`, permitindo iniciar o conjunto com `docker compose up --build -d`.
+
+Neste projeto, o Compose inicia os front-ends Portal e Admin, o Gateway, os BFFs, os serviços de domínio, o orquestrador SAGA e cinco bancos de dados. Os serviços de aplicação têm Dockerfiles próprios, os back-ends usam build multi-stage para separar a instalação de dependências da imagem de execução, e os front-ends usam Vite em modo de desenvolvimento.
+
+O Gateway e os front-ends têm portas publicadas para acesso local, os BFFs, serviços e bancos não publicam portas no host, as redes `edge-net` e `app-net` conectam as camadas da aplicação, enquanto cada banco fica em uma rede interna própria, e os volumes nomeados preservam os dados dos bancos quando os containers são encerrados. A rede `app-net` é compartilhada pelos serviços internos, portanto a ausência de portas públicas não impede, por si só, a comunicação direta entre containers nessa rede.
+
+O endpoint de diagnóstico do `saga-orquestrador` verifica conectividade e consulta o banco de Atendimento, ele não executa uma transação de negócio SAGA nem demonstra suas etapas e compensações ainda.
+
+Vídeo de explicação do Sistema Conteinerizado: [Conteinerização do BEDARCE](https://drive.google.com/file/d/18UIuW60v1C2TEkPdVBjYStOUAwaC2CRP/view?usp=sharing).
+
+
 ## Como rodar o projeto
 
-[Instruções de instalação e execução será preenchida conforme o projeto evoluir.]
+### Pré-requisitos
+
+- Docker Desktop instalado e em execução, com Docker Compose v2.
+- PowerShell aberto na raiz do repositório.
+
+### Iniciar o sistema
+
+Na primeira execução, crie o arquivo local `.env` a partir do exemplo em `.env.example`:
+
+```powershell
+docker compose up --build -d
+docker compose ps
+```
+
+Espere os bancos e serviços aparecerem como `healthy` em `docker compose ps`.
+
+### Endereços locais
+
+- Portal Vite: <http://localhost:5173>
+- Painel Admin Vite: <http://localhost:5174>
+- API Gateway Express: <http://localhost:8080>
+- Saúde do Gateway: <http://localhost:8080/health>
+
+Os front-ends usam o proxy de desenvolvimento do Vite para enviar as chamadas à API pelo Gateway. Na tela, clique em **Testar todos** para verificar os serviços e bancos pelo caminho `Frontend -> Gateway -> BFF -> Gateway -> serviço -> banco de dados`.
+
+Para fazer as verificações por HTTP, use `health` para verificar o processo e `db` para executar o teste real do banco:
+
+```text
+GET http://localhost:8080/portal/v1/diagnostics/services/{servico}/{operacao}
+GET http://localhost:8080/admin/v1/diagnostics/services/{servico}/{operacao}
+```
+
+Valores aceitos para `{servico}`: `usuarios`, `atendimento`, `gamificacao-escrita`, `gamificacao-leitura`, `comunidade` e `saga-orquestrador`. Valores para `{operacao}`: `health` ou `db`. Exemplo:
+
+```text
+GET http://localhost:8080/admin/v1/diagnostics/services/comunidade/db
+```
+
+### Escalar serviços internos
+
+O Compose permite solicitar réplicas de serviços, por exemplo:
+
+```powershell
+docker compose up -d --scale bff-portal=2 --scale usuarios-service=3 --scale comunidade-service=2
+docker compose ps
+```
+
+O Gateway encontra os serviços pelo DNS interno do Compose.
+
+OBS: Não escale `gateway`, `frontend-portal` ou `frontend-admin` nesta configuração inicial, pois cada um publica uma porta fixa no host, para escalar esses componentes seria necessário adicionar um balanceador de entrada que será adicionado posteriormente
+
+### Logs e encerramento
+
+```powershell
+docker compose logs -f gateway bff-portal usuarios-service
+docker compose down
+```
+
+`docker compose down` encerra os containers, mas preserva os volumes nomeados dos bancos.
