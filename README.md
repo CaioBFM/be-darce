@@ -204,7 +204,7 @@ https://www.jogoremoto.pt/docs/extra/uPoRHt.pdf
 
 A arquitetura geral do sistema foi criada sob uma abordagem distribuída garantindo que cada componente possua responsabilidades bem delimitadas e possa evoluir de forma independente, de modo que toda a comunicação entre as camadas ocorra exclusivamente por meio de chamadas de interface de rede padronizadas baseadas em requisições e respostas sobre protocolo web, eliminando o uso de intermediários complexos ou barramentos de mensagens externos. Nesse sentido, o ecossistema foi estruturado de forma que os clientes na ponta conversam com uma única porta de entrada centralizada, a qual distribui o tráfego de maneira controlada para adaptadores de interface específicos que, por sua vez, coordenam as chamadas aos microsserviços de domínio responsáveis por gerenciar os dados em seus respectivos repositórios isolados, ou seja, essa divisão rigorosa foi adotada para evitar acoplamento excessivo entre os módulos, permitindo que falhas em um domínio específico sejam tratadas de maneira isolada sem comprometer a estabilidade e a disponibilidade de todo o sistema.
 
-<img width="2560" height="1440" alt="Arquitetura" src="https://github.com/user-attachments/assets/0aed582f-b1fc-421a-a60d-7e00a53101fe" />
+<img width="2560" height="1440" alt="ARQUITETURA BEDARCE" src="https://github.com/user-attachments/assets/24f4f050-7197-4a67-bea9-074a37628071" />
 
 ---
 
@@ -223,7 +223,8 @@ O painel administrativo é a segunda interface do sistema dedicada exclusivament
 ---
 
 ## API Gateway e Roteamento
-<img width="2560" height="1440" alt="GATEWAY" src="https://github.com/user-attachments/assets/af012f5b-7c27-4865-b08c-6cb457ef513e" />
+
+<img width="2560" height="1440" alt="GATEWAY BEDARCE" src="https://github.com/user-attachments/assets/737c2a49-4f13-4ba9-abc1-38ae4a676c8a" />
 
 O Gateway é a única porta de entrada do sistema para requisições externas. Ele não contém regras de negócio, apenas intercepta as chamadas e as encaminha, sem expor os microsserviços nem os bancos de dados.
 
