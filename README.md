@@ -557,109 +557,90 @@ Esse sistema faz a adaptação da interface conforme o ciclo de vida avança, ou
 
 ## Estrutura de pastas
 
-> Estrutura planejada; será ajustada conforme a implementação.
-
-```text
-bedarce/
-├── gateway/              # API Gateway (roteamento, autenticação, rate limiting)
+~~~text
+be-darce/
 ├── bffs/
-│   ├── bff-portal/
-│   └── bff-admin/
-├── services/
-│   ├── usuarios-service/
-│   ├── atendimento-service/
-│   ├── gamificacao-service/
-│   └── comunidade-service/
-├── frontends/
-│   ├── portal/
-│   └── admin/
+│   ├── bff-admin/
+│   └── bff-portal/
 ├── docs/
-│   └── api/              # Contratos OpenAPI
+│   └── api/
+├── frontends/
+│   ├── admin/
+│   └── portal/
+├── gateway/
+├── services/
+│   ├── atendimento-service/
+│   ├── comunidade-service/
+│   ├── gamificacao-escrita-service/
+│   ├── gamificacao-leitura-service/
+│   ├── saga-orquestrador/
+│   └── usuarios-service/
+├── .dockerignore
+├── .env.example
+├── docker-compose.yml
 └── README.md
-```
+~~~
 
-## Conteinerização com Docker Compose
-
-Conteinerização empacota cada aplicação com suas dependências em uma imagem Docker, que pode ser executada em um container isolado, na qual o Docker Compose descreve os containers, suas configurações, redes e volumes em `docker-compose.yml`, permitindo iniciar o conjunto com `docker compose up --build -d`.
-
-Neste projeto, o Compose inicia os front-ends Portal e Admin, o Gateway, os BFFs, os serviços de domínio, o orquestrador SAGA e cinco bancos de dados. Os serviços de aplicação têm Dockerfiles próprios, os back-ends usam build multi-stage para separar a instalação de dependências da imagem de execução, e os front-ends usam Vite em modo de desenvolvimento.
-
-O Gateway e os front-ends têm portas publicadas para acesso local, os BFFs, serviços e bancos não publicam portas no host, as redes `edge-net` e `app-net` conectam as camadas da aplicação, enquanto cada banco fica em uma rede interna própria, e os volumes nomeados preservam os dados dos bancos quando os containers são encerrados. A rede `app-net` é compartilhada pelos serviços internos, portanto a ausência de portas públicas não impede, por si só, a comunicação direta entre containers nessa rede.
-
-O endpoint de diagnóstico do `saga-orquestrador` verifica conectividade e consulta o banco de Atendimento, ele não executa uma transação de negócio SAGA nem demonstra suas etapas e compensações ainda.
-
-Vídeo de explicação do Sistema Conteinerizado: [Conteinerização do BEDARCE](https://drive.google.com/file/d/18UIuW60v1C2TEkPdVBjYStOUAwaC2CRP/view?usp=sharing).
+Cada módulo contém seu Dockerfile, código-fonte e dependências. O arquivo .env.example é um modelo para criar o .env, que contém as variáveis lidas pelo Docker Compose.
 
 
-## Como rodar o projeto
+## Parte 3 — Containerização e Orquestração
 
-### Pré-requisitos
+**Escopo da implementação atual:** nesta etapa, o BEDARCE demonstra a infraestrutura distribuída com Docker, a comunicação entre seus componentes, a conectividade com os bancos de dados e a escalabilidade horizontal. Os fluxos de negócio descritos nas seções arquiteturais anteriores, como SAGA com compensações, Outbox/Relay, sincronização CQRS, autenticação e rate limiting, representam funcionalidades projetadas, ainda não implementadas integralmente.
 
-- Docker Desktop instalado e em execução, com Docker Compose v2.
-- PowerShell aberto na raiz do repositório.
+### 1. Dockerfiles e Qualidade das Imagens
 
-### Iniciar o sistema
+O Compose constrói 11 imagens próprias: Gateway, dois BFFs, seis serviços e dois front-ends. Os cinco bancos usam imagens oficiais PostgreSQL e MongoDB.
 
-Na primeira execução, crie o arquivo local `.env` a partir do exemplo em `.env.example`:
+Os nove componentes Node.js de back-end usam multi-stage build. A etapa dependencies instala com npm ci --omit=dev; runtime copia dependências de produção e arquivos da aplicação. As imagens usam Node.js 22 Alpine, NODE_ENV=production e o usuário node não privilegiado. Isso reduz dependências desnecessárias e evita executar como root.
 
-```powershell
-docker compose up --build -d
+Os front-ends também usam **multi-stage build**. Na etapa de build, Node.js 22 Alpine instala as dependências com npm ci e gera os arquivos estáticos com npm run build. Na etapa final, baseada em nginx:stable-alpine, somente os arquivos de dist e a configuração Nginx são copiados para a imagem. Assim, as imagens em execução não carregam Node.js, dependências de desenvolvimento ou ferramentas de build.
+
+Cada nginx.conf serve a aplicação de página única com fallback para index.html e encaminha as rotas /portal/v1/ ou /admin/v1/ ao Gateway na rede Docker, incluindo cabeçalhos de encaminhamento. O .dockerignore também reduz o contexto enviado ao build.
+
+~~~bash
+docker compose config
+docker compose build
+docker image ls
+~~~
+
+### 2. Docker Compose, Volumes e Redes
+
+O docker-compose.yml coordena 16 contêineres: dois front-ends, Gateway, dois BFFs, seis serviços e cinco bancos. Centraliza builds, variáveis, dependências, portas, redes, healthchecks e reinício unless-stopped.
+
+São sete redes: edge-net liga front-ends e Gateway; app-net conecta Gateway, BFFs e serviços; cada banco fica em rede internal própria, compartilhada com seu serviço. Bancos, BFFs e serviços não publicam portas no host. Os front-ends expõem a porta 80 internamente, mapeada para 5173 (Portal) e 5174 (Admin) no host; o Gateway publica a porta 8080.
+
+Cinco volumes nomeados preservam três bancos PostgreSQL e dois MongoDB. docker compose down mantém os volumes. Os bancos verificam pg_isready ou mongosh ping; os seis serviços, dois BFFs e Gateway verificam /health. O Compose aguarda dependências saudáveis conforme depends_on; os front-ends aguardam o Gateway.
+
+~~~bash
+# Verificar os contêineres
 docker compose ps
-```
 
-Espere os bancos e serviços aparecerem como `healthy` em `docker compose ps`.
+# Verificar as redes criadas
+docker network ls
 
-### Endereços locais
+# Verificar os volumes persistentes
+docker volume ls
 
-- Portal Vite: <http://localhost:5173>
-- Painel Admin Vite: <http://localhost:5174>
-- API Gateway Express: <http://localhost:8080>
-- Saúde do Gateway: <http://localhost:8080/health>
+# Consultar os últimos logs
+docker compose logs --tail=100
+~~~
 
-Os front-ends usam o proxy de desenvolvimento do Vite para enviar as chamadas à API pelo Gateway. Na tela, clique em **Testar todos** para verificar os serviços e bancos pelo caminho `Frontend -> Gateway -> BFF -> Gateway -> serviço -> banco de dados`.
+### 3. Demonstração de Escalabilidade
 
-Para fazer as verificações por HTTP, use `health` para verificar o processo e `db` para executar o teste real do banco:
+Usuários pode ser replicado pois não publica porta fixa no host; réplicas compartilham PostgreSQL.
 
-```text
-GET http://localhost:8080/portal/v1/diagnostics/services/{servico}/{operacao}
-GET http://localhost:8080/admin/v1/diagnostics/services/{servico}/{operacao}
-```
-
-Valores aceitos para `{servico}`: `usuarios`, `atendimento`, `gamificacao-escrita`, `gamificacao-leitura`, `comunidade` e `saga-orquestrador`. Valores para `{operacao}`: `health` ou `db`. Exemplo:
-
-```text
-GET http://localhost:8080/admin/v1/diagnostics/services/comunidade/db
-```
-
-### Escalabilidade horizontal com Docker Compose
-
-O BEDARCE permite executar múltiplas réplicas de serviços internos utilizando o Docker Compose. Como esses serviços não publicam portas diretamente no host, é possível criar novas instâncias sem conflitos de portas.
-
-Para validar essa capacidade, utilizamos o microsserviço `usuarios-service`, que compartilha seu banco PostgreSQL entre as réplicas.
-
-#### 1. Iniciar duas réplicas
-
-Na raiz do projeto, execute:
-
-```bash
+~~~bash
 docker compose up -d --scale usuarios-service=2
 docker compose ps usuarios-service
-```
+~~~
 
-O resultado esperado são duas instâncias em execução, ambas com o status `healthy`:
+Devem aparecer bedarce-usuarios-service-1 e bedarce-usuarios-service-2. No Linux, WSL ou Git Bash, rode 20 chamadas ao endpoint health pelo BFF Portal:
 
-- `bedarce-usuarios-service-1`
-- `bedarce-usuarios-service-2`
-
-#### 2. Validar a distribuição das requisições
-
-No Linux, execute o comando abaixo para realizar 20 requisições HTTP ao serviço de Usuários a partir do contêiner do BFF Portal:
-
-```bash
-docker compose exec bff-portal node -e '
+~~~bash
+docker compose exec -T bff-portal node -e '
 const http = require("node:http");
 const counts = {};
-
 async function test() {
   for (let i = 0; i < 20; i++) {
     const ip = await new Promise((resolve, reject) => {
@@ -669,51 +650,108 @@ async function test() {
         res.on("end", () => resolve(address));
       }).on("error", reject);
     });
-
     counts[ip] = (counts[ip] || 0) + 1;
   }
-
   console.log("Requisições por IP:", counts);
 }
-
 test().catch(console.error);
 '
-```
+~~~
 
-O teste registra o endereço IP da instância que respondeu a cada requisição.
+Windows PowerShell:
 
-**Resultado observado em 17/11/2026:**
+~~~powershell
+$teste = @'
+const http = require("node:http");
+const counts = {};
+async function test() {
+  for (let i = 0; i < 20; i++) {
+    const ip = await new Promise((resolve, reject) => {
+      http.get("http://usuarios-service:5000/health", { agent: false }, (res) => {
+        const address = res.socket.remoteAddress;
+        res.resume();
+        res.on("end", () => resolve(address));
+      }).on("error", reject);
+    });
+    counts[ip] = (counts[ip] || 0) + 1;
+  }
+  console.log("Requisições por IP:", counts);
+}
+test().catch(console.error);
+'@
+docker compose exec -T bff-portal node -e $teste
+~~~
 
-```text
+Resultado observado em 17/11/2026:
+
+~~~text
 Requisições por IP: { '172.22.0.2': 9, '172.22.0.11': 11 }
-```
+~~~
 
-Das 20 requisições realizadas, 9 foram atendidas por uma réplica (45%) e 11 pela outra (55%).
+Foram 9 respostas de uma réplica (45%) e 11 da outra (55%). IPs e distribuição podem variar. Isso demonstra as duas instâncias respondendo pela resolução DNS Docker, não desempenho sob carga nem balanceamento no Gateway.
 
-Os endereços IP e a distribuição podem variar entre execuções.
-
-**Conclusão:** o teste comprova que duas réplicas do serviço podem operar simultaneamente e receber conexões HTTP por meio da resolução DNS interna do Docker.
-
-Essa validação não representa um teste de desempenho sob carga nem comprova balanceamento de requisições pelo API Gateway.
-
-#### 3. Retornar à configuração original
-
-Após os testes, execute:
-
-```bash
+~~~bash
 docker compose up -d --scale usuarios-service=1
 docker compose ps usuarios-service
-```
+~~~
 
-Isso remove a réplica adicional e mantém a configuração original, sem apagar os dados persistidos no banco PostgreSQL.
+### 4. Como Executar o Projeto
 
-**Observação:** serviços que publicam portas fixas no host, como o Gateway e os front-ends nesta configuração, não podem ser escalados diretamente da mesma maneira sem ajustes na camada de entrada.
+Pré-requisitos: Git e Docker com Compose v2; no Windows, Docker Desktop em execução. Clone o repositório e troque para a branch dev:
 
-### Logs e encerramento
+~~~bash
+git clone https://github.com/fabiovalim/be-darce.git
+cd be-darce
+git switch dev
+~~~
 
-```powershell
+Ubuntu/Linux:
+
+~~~bash
+cp .env.example .env
+~~~
+
+Windows PowerShell:
+
+~~~powershell
+Copy-Item .env.example .env
+~~~
+
+O exemplo define portas, bancos e endereços internos. Altere a senha padrão PostgreSQL para uso fora da máquina local e não versione .env.
+
+~~~bash
+docker compose up -d --build
+docker compose ps
+~~~
+
+Aguarde os serviços monitorados ficarem healthy. Acesse:
+
+- Portal: <http://localhost:5173>
+- Painel Admin: <http://localhost:5174>
+- Gateway: <http://localhost:8080>
+- Saúde: <http://localhost:8080/health>
+
+No Portal ou no Admin, clique em **Testar todos** para verificar a comunicação entre os componentes.
+
+Diagnósticos aceitam serviço usuarios, atendimento, gamificacao-escrita, gamificacao-leitura, comunidade ou saga-orquestrador e operação health ou db:
+
+~~~text
+GET http://localhost:8080/portal/v1/diagnostics/services/{servico}/{operacao}
+GET http://localhost:8080/admin/v1/diagnostics/services/{servico}/{operacao}
+GET http://localhost:8080/admin/v1/diagnostics/services/comunidade/db
+~~~
+
+Logs, reinício e encerramento:
+
+~~~bash
 docker compose logs -f gateway bff-portal usuarios-service
+docker compose restart
+docker compose restart gateway
 docker compose down
-```
+~~~
 
-`docker compose down` encerra os containers, mas preserva os volumes nomeados dos bancos.
+docker compose down preserva os volumes dos bancos.
+
+### 5. Demonstração em Vídeo
+
+Vídeo de explicação do sistema conteinerizado: [Conteinerização do BEDARCE](https://drive.google.com/file/d/18UIuW60v1C2TEkPdVBjYStOUAwaC2CRP/view?usp=sharing).
