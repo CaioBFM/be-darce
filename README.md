@@ -631,18 +631,83 @@ Valores aceitos para `{servico}`: `usuarios`, `atendimento`, `gamificacao-escrit
 GET http://localhost:8080/admin/v1/diagnostics/services/comunidade/db
 ```
 
-### Escalar serviços internos
+### Escalabilidade horizontal com Docker Compose
 
-O Compose permite solicitar réplicas de serviços, por exemplo:
+O BEDARCE permite executar múltiplas réplicas de serviços internos utilizando o Docker Compose. Como esses serviços não publicam portas diretamente no host, é possível criar novas instâncias sem conflitos de portas.
 
-```powershell
-docker compose up -d --scale bff-portal=2 --scale usuarios-service=3 --scale comunidade-service=2
-docker compose ps
+Para validar essa capacidade, utilizamos o microsserviço `usuarios-service`, que compartilha seu banco PostgreSQL entre as réplicas.
+
+#### 1. Iniciar duas réplicas
+
+Na raiz do projeto, execute:
+
+```bash
+docker compose up -d --scale usuarios-service=2
+docker compose ps usuarios-service
 ```
 
-O Gateway encontra os serviços pelo DNS interno do Compose.
+O resultado esperado são duas instâncias em execução, ambas com o status `healthy`:
 
-OBS: Não escale `gateway`, `frontend-portal` ou `frontend-admin` nesta configuração inicial, pois cada um publica uma porta fixa no host, para escalar esses componentes seria necessário adicionar um balanceador de entrada que será adicionado posteriormente
+- `bedarce-usuarios-service-1`
+- `bedarce-usuarios-service-2`
+
+#### 2. Validar a distribuição das requisições
+
+No Linux, execute o comando abaixo para realizar 20 requisições HTTP ao serviço de Usuários a partir do contêiner do BFF Portal:
+
+```bash
+docker compose exec bff-portal node -e '
+const http = require("node:http");
+const counts = {};
+
+async function test() {
+  for (let i = 0; i < 20; i++) {
+    const ip = await new Promise((resolve, reject) => {
+      http.get("http://usuarios-service:5000/health", { agent: false }, (res) => {
+        const address = res.socket.remoteAddress;
+        res.resume();
+        res.on("end", () => resolve(address));
+      }).on("error", reject);
+    });
+
+    counts[ip] = (counts[ip] || 0) + 1;
+  }
+
+  console.log("Requisições por IP:", counts);
+}
+
+test().catch(console.error);
+'
+```
+
+O teste registra o endereço IP da instância que respondeu a cada requisição.
+
+**Resultado observado em 17/11/2026:**
+
+```text
+Requisições por IP: { '172.22.0.2': 9, '172.22.0.11': 11 }
+```
+
+Das 20 requisições realizadas, 9 foram atendidas por uma réplica (45%) e 11 pela outra (55%).
+
+Os endereços IP e a distribuição podem variar entre execuções.
+
+**Conclusão:** o teste comprova que duas réplicas do serviço podem operar simultaneamente e receber conexões HTTP por meio da resolução DNS interna do Docker.
+
+Essa validação não representa um teste de desempenho sob carga nem comprova balanceamento de requisições pelo API Gateway.
+
+#### 3. Retornar à configuração original
+
+Após os testes, execute:
+
+```bash
+docker compose up -d --scale usuarios-service=1
+docker compose ps usuarios-service
+```
+
+Isso remove a réplica adicional e mantém a configuração original, sem apagar os dados persistidos no banco PostgreSQL.
+
+**Observação:** serviços que publicam portas fixas no host, como o Gateway e os front-ends nesta configuração, não podem ser escalados diretamente da mesma maneira sem ajustes na camada de entrada.
 
 ### Logs e encerramento
 
