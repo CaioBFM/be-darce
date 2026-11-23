@@ -4,6 +4,22 @@
 
 > Plataforma distribuída de apoio, acolhimento e reabilitação para pessoas em situação de vício em apostas (bets), oferecendo um ambiente seguro e acessível para conscientização, prevenção e recuperação. A BEDARCE busca aproximar pessoas afetadas pelas apostas de profissionais especializados, grupos de apoio, mentores e conteúdos educacionais baseados em evidências, além de disponibilizar ferramentas de autocontrole e suporte para momentos de crise. A plataforma também valoriza o compartilhamento de experiências e relatos de pessoas que vivenciaram os impactos das apostas, promovendo acolhimento, identificação e uma rede de apoio ao longo do processo de recuperação.
 
+## Sumário
+- [O problema](#o-problema)
+- [A proposta da BEDARCE](#a-proposta-da-bedarce)
+- [Arquitetura do sistema](#visão-geral-da-arquitetura-e-comunicação-do-sistema)
+  - [Interfaces cliente](#interfaces-cliente)
+  - [Gateway e BFFs](#api-gateway-e-roteamento)
+  - [Microsserviços](#microsserviços-e-subdivisões)
+- [Padrões arquiteturais](#padrão-database-per-service-outbox-e-relay)
+  - [CQRS](#cqrs-no-microsserviço-de-gamificação)
+  - [SAGA](#saga-de-evolução-de-paciente-para-mentor)
+- [Contratos das APIs](#api-rest-e-contratos-dos-microsserviços)
+- [Estrutura do projeto](#estrutura-de-pastas)
+- [Containerização e orquestração](#conteinerização-com-docker-compose)
+- [Como executar](#como-rodar-o-projeto)
+- [Demonstração](#demonstração-em-vídeo)
+
 ## Sobre o projeto
 
 ### Contribuidores
