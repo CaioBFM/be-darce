@@ -19,6 +19,7 @@
 - [Containerização e orquestração](#conteinerização-com-docker-compose)
 - [Como executar](#como-rodar-o-projeto)
 - [Demonstração](#demonstração-em-vídeo)
+- [Evolução Arquitetural](#mudanças-na-arquitetura-do-projeto)
 
 ## Sobre o projeto
 
@@ -668,3 +669,25 @@ docker compose down
 ```
 
 `docker compose down` encerra os containers, mas preserva os volumes nomeados dos bancos.
+
+## Mudanças na Arquitetura do Projeto
+
+| | Antes | Depois |
+|---|---|---|
+| Gateway | Roteia apenas para os BFFs | Roteia direto para Orquestrador SAGA e serviços |
+| BFFs | Intermediários de todas as chamadas aos serviços | Fora do caminho principal dos serviços |
+| Saga | Atendimento aciona o Orquestrador, que comanda Usuário, Comunidade e Escrita | Passos numerados (1–4) com papéis: Usuário **Compensável**, Comunidade **Pivô**, Escrita da Gamificação **Retentável** |
+| Outbox e Relay | Só na sincronização Escrita → Leitura da Gamificação | Também em Usuários, Comunidades e Escrita da Gamificação |
+
+### Antes:
+<img width="1280" height="770" alt="ARQUITETURA BEDARCE" src="https://github.com/user-attachments/assets/0aed582f-b1fc-421a-a60d-7e00a53101fe" />
+
+### Depois:
+<img width="1280" height="770" alt="ARQUITETURA BEDARCE" src="https://github.com/user-attachments/assets/24f4f050-7197-4a67-bea9-074a37628071" />
+
+### Impacto
+
+- **Menos saltos e menos acoplamento:** chamadas não passam mais obrigatoriamente pelos BFFs.
+- **Falhas previsíveis na saga:** compensa-se antes do pivô e repete-se (retry) depois dele.
+- **Eventos confiáveis:** o Outbox evita inconsistência entre gravar no banco e publicar o evento.
+- **Atenção:** consumidores precisam ser idempotentes (entrega *at-least-once*), os relays precisam de monitoramento e o Gateway deve se limitar a roteamento.
