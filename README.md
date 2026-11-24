@@ -4,6 +4,23 @@
 
 > Plataforma distribuída de apoio, acolhimento e reabilitação para pessoas em situação de vício em apostas (bets), oferecendo um ambiente seguro e acessível para conscientização, prevenção e recuperação. A BEDARCE busca aproximar pessoas afetadas pelas apostas de profissionais especializados, grupos de apoio, mentores e conteúdos educacionais baseados em evidências, além de disponibilizar ferramentas de autocontrole e suporte para momentos de crise. A plataforma também valoriza o compartilhamento de experiências e relatos de pessoas que vivenciaram os impactos das apostas, promovendo acolhimento, identificação e uma rede de apoio ao longo do processo de recuperação.
 
+## Sumário
+- [O problema](#o-problema)
+- [A proposta da BEDARCE](#a-proposta-da-bedarce)
+- [Arquitetura do sistema](#visão-geral-da-arquitetura-e-comunicação-do-sistema)
+  - [Interfaces cliente](#interfaces-cliente)
+  - [Gateway e BFFs](#api-gateway-e-roteamento)
+  - [Microsserviços](#microsserviços-e-subdivisões)
+- [Padrões arquiteturais](#padrão-database-per-service-outbox-e-relay)
+  - [CQRS](#cqrs-no-microsserviço-de-gamificação)
+  - [SAGA](#saga-de-evolução-de-paciente-para-mentor)
+- [Contratos das APIs](#api-rest-e-contratos-dos-microsserviços)
+- [Estrutura do projeto](#estrutura-de-pastas)
+- [Containerização e orquestração](#conteinerização-com-docker-compose)
+- [Como executar](#como-rodar-o-projeto)
+- [Demonstração](#demonstração-em-vídeo)
+- [Evolução Arquitetural](#mudanças-na-arquitetura-do-projeto)
+
 ## Sobre o projeto
 
 ### Contribuidores
@@ -750,8 +767,32 @@ docker compose restart gateway
 docker compose down
 ~~~
 
+`docker compose down` encerra os containers, mas preserva os volumes nomeados dos bancos.
+
 docker compose down preserva os volumes dos bancos.
 
 ### 5. Demonstração em Vídeo
 
 Vídeo de explicação do sistema conteinerizado: [Conteinerização do BEDARCE](https://drive.google.com/file/d/18UIuW60v1C2TEkPdVBjYStOUAwaC2CRP/view?usp=sharing).
+
+## Mudanças na Arquitetura do Projeto
+
+| | Antes | Depois |
+|---|---|---|
+| Gateway | Roteia apenas para os BFFs | Roteia direto para Orquestrador SAGA e serviços |
+| BFFs | Intermediários de todas as chamadas aos serviços | Fora do caminho principal dos serviços |
+| Saga | Atendimento aciona o Orquestrador, que comanda Usuário, Comunidade e Escrita | Passos numerados (1–4) com papéis: Usuário **Compensável**, Comunidade **Pivô**, Escrita da Gamificação **Retentável** |
+| Outbox e Relay | Só na sincronização Escrita → Leitura da Gamificação | Também em Usuários, Comunidades e Escrita da Gamificação |
+
+### Antes:
+<img width="1280" height="770" alt="ARQUITETURA BEDARCE" src="https://github.com/user-attachments/assets/0aed582f-b1fc-421a-a60d-7e00a53101fe" />
+
+### Depois:
+<img width="1280" height="770" alt="ARQUITETURA BEDARCE" src="https://github.com/user-attachments/assets/24f4f050-7197-4a67-bea9-074a37628071" />
+
+### Impacto
+
+- **Menos saltos e menos acoplamento:** chamadas não passam mais obrigatoriamente pelos BFFs.
+- **Falhas previsíveis na saga:** compensa-se antes do pivô e repete-se (retry) depois dele.
+- **Eventos confiáveis:** o Outbox evita inconsistência entre gravar no banco e publicar o evento.
+- **Atenção:** consumidores precisam ser idempotentes (entrega *at-least-once*), os relays precisam de monitoramento e o Gateway deve se limitar a roteamento.
