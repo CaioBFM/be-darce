@@ -39,6 +39,16 @@ const proxyError = (service) => (error, req, res) => {
 };
 
 app.use(
+  '/saga/v1',
+  createProxyMiddleware({
+    target: `http://saga-orquestrador:${process.env.PORT_SAGA || 5005}`,
+    changeOrigin: true,
+    pathRewrite: (path) => `/v1${path}`,
+    on: { error: proxyError('saga-orquestrador') },
+  }),
+);
+
+app.use(
   '/portal/v1',
   createProxyMiddleware({
     target: portalUrl,
