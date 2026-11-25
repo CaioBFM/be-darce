@@ -362,6 +362,8 @@ Se o serviço gravasse e depois enviasse a notificação, uma falha entre as dua
 - Após o limite de tentativas, marca como `FALHA` para análise manual.
 - A entrega é *at-least-once*, então o consumidor deve ser **idempotente**: registra os ids de eventos já processados e responde `200` sem reprocessar quando recebe um repetido.
 
+> **Implementação (Parte 4):** a escrita no PostgreSQL, a outbox, o Relay e a projeção no MongoDB, com o roteiro de demonstração, estão documentados em [`docs/CQRS.md`](docs/CQRS.md).
+
 ---
 
 ## SAGA de Evolução de Paciente para Mentor
@@ -585,6 +587,7 @@ be-darce/
 │   ├── admin/
 │   └── portal/
 ├── gateway/
+├── scripts/
 ├── services/
 │   ├── atendimento-service/
 │   ├── comunidade-service/
