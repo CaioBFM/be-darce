@@ -887,6 +887,90 @@ paths:
                 instance: /v1/estatisticas/niveis
                 code: FORBIDDEN
       x-bedarce-caller: bff-admin
+  /v1/internal/eventos:
+    post:
+      tags:
+      - Internal
+      summary: Receber evento do modelo de escrita
+      description: 'Acesso: Interna. Chamado pelo Relay da outbox do serviço de escrita (gamificacao-escrita-service) no serviço
+        de leitura (gamificacao-leitura-service). Idempotente: um eventoId já aplicado responde JA_PROCESSADO, e snapshots com
+        versão menor ou igual à do documento são descartados.'
+      operationId: postV1InternalEventos
+      security:
+      - internalServiceAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventoGamificacao'
+      responses:
+        '200':
+          description: Evento aplicado agora (RECEBIDO) ou anteriormente (JA_PROCESSADO).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventoAck'
+        '400':
+          description: Evento inválido; o Relay marca o evento como FALHA sem novas tentativas.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-bedarce-caller: gamificacao-escrita-service (Relay)
+  /v1/internal/outbox:
+    get:
+      tags:
+      - Internal
+      summary: Consultar a outbox
+      description: 'Acesso: Interna. Resumo por status e eventos mais recentes da outbox do modelo de escrita.'
+      operationId: getV1InternalOutbox
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - PENDENTE
+          - ENVIADO
+          - FALHA
+      - name: limite
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 20
+      responses:
+        '200':
+          description: Operação concluída.
+      x-bedarce-caller: operação / diagnóstico
+  /v1/internal/outbox/{id}/reprocessamento:
+    post:
+      tags:
+      - Internal
+      summary: Reprocessar evento em FALHA
+      description: 'Acesso: Interna. Volta um evento em FALHA para PENDENTE, zerando as tentativas, após análise manual.'
+      operationId: postV1InternalOutboxIdReprocessamento
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Evento reenfileirado.
+        '404':
+          description: Evento em FALHA não encontrado.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-bedarce-caller: operação / diagnóstico
 components:
   schemas:
     Error:
@@ -986,6 +1070,10 @@ components:
           example: 10
         bloqueada:
           type: boolean
+          example: false
+        concluida:
+          type: boolean
+          description: Verdadeiro quando o usuário do cabeçalho X-Usuario-Id já concluiu a etapa.
           example: false
       additionalProperties: false
       required:
@@ -1230,6 +1318,10 @@ components:
           type: string
           format: date-time
           example: '2026-10-21T12:00:00Z'
+        eventoId:
+          type: string
+          format: uuid
+          description: Evento ETAPA_CONCLUIDA gravado na outbox na mesma transação.
       additionalProperties: false
       required:
       - etapaId
@@ -1273,6 +1365,9 @@ components:
               trilhaId:
                 type: string
                 example: t-1
+              nome:
+                type: string
+                example: Primeiros passos
               etapasConcluidas:
                 type: integer
                 minimum: 0
@@ -1292,6 +1387,8 @@ components:
             - etapasConcluidas
             - totalEtapas
             - progressoPercentual
+        sincronizacao:
+          $ref: '#/components/schemas/Sincronizacao'
       additionalProperties: false
       required:
       - usuarioId
@@ -1425,6 +1522,76 @@ components:
         opcoes:
         - Observar situações
         - Ignorar sentimentos
+    Sincronizacao:
+      type: object
+      description: Metadados do modelo de leitura (CQRS) para acompanhar a consistência eventual.
+      properties:
+        versao:
+          type: integer
+          minimum: 0
+          description: Versão do agregado de progresso já projetada; 0 quando ainda não há eventos.
+          example: 4
+        sincronizadoEm:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        defasagemMs:
+          type:
+          - integer
+          - 'null'
+          description: Tempo entre a gravação do evento na outbox e a aplicação na leitura.
+          example: 980
+        ultimoEventoId:
+          type:
+          - string
+          - 'null'
+      additionalProperties: false
+      required:
+      - versao
+      - sincronizadoEm
+      - defasagemMs
+      - ultimoEventoId
+    EventoGamificacao:
+      type: object
+      description: Envelope enviado pelo Relay. dados carrega o snapshot completo e versionado do agregado.
+      properties:
+        eventoId:
+          type: string
+          format: uuid
+        tipo:
+          type: string
+          enum:
+          - TRILHA_ATUALIZADA
+          - ETAPA_CONCLUIDA
+        agregadoId:
+          type: string
+          description: Id da trilha (TRILHA_ATUALIZADA) ou do usuário (ETAPA_CONCLUIDA).
+        ocorridoEm:
+          type: string
+          format: date-time
+        dados:
+          type: object
+      required:
+      - eventoId
+      - tipo
+      - agregadoId
+      - ocorridoEm
+      - dados
+    EventoAck:
+      type: object
+      properties:
+        eventoId:
+          type: string
+        situacao:
+          type: string
+          enum:
+          - RECEBIDO
+          - JA_PROCESSADO
+      additionalProperties: false
+      required:
+      - eventoId
+      - situacao
   securitySchemes:
     bearerAuth:
       type: http
