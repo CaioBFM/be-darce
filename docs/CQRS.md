@@ -212,3 +212,35 @@ Resultado observado: com a leitura parada, a conclusão respondeu `200` e o even
 
 - **Gateway e BFFs:** expor os comandos pela escrita e as consultas pela leitura, preenchendo `X-Usuario-Id` com o usuário autenticado. As rotas `/v1/internal/*` não devem ser expostas.
 - **SAGA (passo 4):** a liberação da trilha exclusiva de mentores (`t-2`, público `MENTOR`) pode ser um novo comando no serviço de escrita, seguindo o mesmo padrão: grava a alteração e o evento na mesma transação, e o Relay propaga para a leitura.
+
+## Integração pelo Gateway e BFF Portal
+
+O Portal encaminha as requisições pela porta pública do Gateway (`GATEWAY_HOST_PORT`, por padrão `8080`), mantendo o fluxo Gateway → BFF Portal → Gateway interno → microsserviço. O identificador de usuário abaixo é provisório para testes; a autenticação ainda não está implementada.
+
+| Método | Rota pública | Destino |
+| --- | --- | --- |
+| POST | `/portal/v1/gamificacao/etapas/{id}/conclusao` | Escrita: `/v1/etapas/{id}/conclusao` |
+| GET | `/portal/v1/gamificacao/progresso` | Leitura: `/v1/usuarios/me/progresso` |
+
+Exemplos para configurar no Insomnia (ajuste a porta pública conforme o `.env`):
+
+**Consultar progresso**
+
+```http
+GET http://localhost:8080/portal/v1/gamificacao/progresso
+X-Usuario-Id: teste-cqrs-20261125-a81f
+```
+
+**Concluir a primeira etapa**
+
+```http
+POST http://localhost:8080/portal/v1/gamificacao/etapas/e-1/conclusao
+Content-Type: application/json
+X-Usuario-Id: teste-cqrs-20261125-a81f
+
+{
+  "respostas": []
+}
+```
+
+O comando retorna os pontos imediatamente; consulte o progresso novamente após o Relay sincronizar a projeção no MongoDB. Repetir a conclusão da mesma etapa retorna `409 ETAPA_JA_CONCLUIDA`. As rotas internas do Relay e da outbox não são encaminhadas pela porta pública do Gateway.

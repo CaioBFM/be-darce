@@ -31,9 +31,12 @@ app.get('/health', (req, res) => {
 const proxyError = (service) => (error, req, res) => {
   console.error(`Falha no proxy para ${service}:`, error.message);
   if (!res.headersSent) {
-    res.status(502).json({
+    const timeout = ['ETIMEDOUT', 'ESOCKETTIMEDOUT', 'ECONNRESET'].includes(error.code);
+    res.status(timeout ? 504 : 502).json({
       status: 'error',
-      message: `Serviço ${service} indisponível.`,
+      message: timeout
+        ? `Tempo limite excedido ao aguardar ${service}.`
+        : `Serviço ${service} indisponível.`,
     });
   }
 };
@@ -43,6 +46,8 @@ app.use(
   createProxyMiddleware({
     target: portalUrl,
     changeOrigin: true,
+    timeout: 15000,
+    proxyTimeout: 12000,
     pathRewrite: (path) => `/v1${path}`,
     on: { error: proxyError('bff-portal') },
   }),
@@ -89,6 +94,55 @@ internalApp.get('/v1/services/:service/:operation', async (req, res) => {
       message: `Não foi possível alcançar ${service} pelo Gateway interno.`,
     });
   }
+});
+
+async function encaminharGamificacao(req, res, { servico, caminho, metodo }) {
+  const target = serviceTargets[servico];
+  const query = new URLSearchParams(req.query).toString();
+  const url = `${target}${caminho}${query ? `?${query}` : ''}`;
+  const headers = {};
+  const usuarioId = req.get('X-Usuario-Id');
+  if (usuarioId) headers['X-Usuario-Id'] = usuarioId;
+  if (metodo === 'POST') headers['Content-Type'] = req.get('Content-Type') || 'application/json';
+
+  try {
+    const response = await fetch(url, {
+      method: metodo,
+      headers,
+      ...(metodo === 'POST' && req.body !== undefined ? { body: JSON.stringify(req.body) } : {}),
+      signal: AbortSignal.timeout(8000),
+    });
+    const body = await response.text();
+    const contentType = response.headers.get('content-type');
+    if (contentType) res.set('Content-Type', contentType);
+    return res.status(response.status).send(body);
+  } catch (error) {
+    const timeout = error.name === 'TimeoutError';
+    console.error(`Falha no Gateway interno para ${servico}:`, error.message);
+    return res.status(timeout ? 504 : 502).json({
+      status: 'error',
+      message: timeout
+        ? `Tempo limite excedido ao aguardar ${servico}.`
+        : `Não foi possível alcançar ${servico} pelo Gateway interno.`,
+    });
+  }
+}
+
+// Rotas internas explícitas: nenhuma rota /v1/internal dos microsserviços é encaminhada.
+internalApp.post('/v1/services/gamificacao-escrita/etapas/:id/conclusao', express.json({ limit: '256kb' }), (req, res) => {
+  return encaminharGamificacao(req, res, {
+    servico: 'gamificacao-escrita',
+    caminho: `/v1/etapas/${encodeURIComponent(req.params.id)}/conclusao`,
+    metodo: 'POST',
+  });
+});
+
+internalApp.get('/v1/services/gamificacao-leitura/usuarios/me/progresso', (req, res) => {
+  return encaminharGamificacao(req, res, {
+    servico: 'gamificacao-leitura',
+    caminho: '/v1/usuarios/me/progresso',
+    metodo: 'GET',
+  });
 });
 
 app.listen(port, '0.0.0.0', () => {
