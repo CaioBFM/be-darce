@@ -18,7 +18,7 @@
 - [Estrutura do projeto](#estrutura-de-pastas)
 - [Containerização e orquestração](#conteinerização-com-docker-compose)
 - [Como executar](#como-rodar-o-projeto)
-- [Demonstração](#demonstração-em-vídeo)
+- [Demonstração em vídeo](#demonstração-em-vídeo)
 - [Evolução Arquitetural](#mudanças-na-arquitetura-do-projeto)
 
 ## Sobre o projeto
@@ -771,9 +771,9 @@ docker compose down
 
 docker compose down preserva os volumes dos bancos.
 
-### 5. Demonstração em Vídeo
+## Demonstração em Vídeo
 
-Vídeo de explicação do sistema conteinerizado: [Conteinerização do BEDARCE](https://drive.google.com/file/d/18UIuW60v1C2TEkPdVBjYStOUAwaC2CRP/view?usp=sharing).
+Vídeo de explicação do sistema conteinerizado: [Conteinerização do BEDARCE](https://drive.google.com/file/d/16lQ_KlTs5xKqNrb4UfjgE6A5zmd9tXKJ/view?usp=sharing).
 
 ## Mudanças na Arquitetura do Projeto
 
