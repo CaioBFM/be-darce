@@ -14,6 +14,7 @@
 - [Padrões arquiteturais](#padrão-database-per-service-outbox-e-relay)
   - [CQRS](#cqrs-no-microsserviço-de-gamificação)
   - [SAGA](#saga-de-evolução-de-paciente-para-mentor)
+- [Contribuições na Parte 4](#contribuições-na-parte-4)
 - [Contratos das APIs](#api-rest-e-contratos-dos-microsserviços)
 - [Estrutura do projeto](#estrutura-de-pastas)
 - [Containerização e orquestração](#conteinerização-com-docker-compose)
@@ -22,6 +23,8 @@
 - [Evolução Arquitetural](#mudanças-na-arquitetura-do-projeto)
 
 ## Sobre o projeto
+
+Apresentação final do sistema em funcionamento: [https://drive.google.com/drive/folders/1E7ULl0l5Ev5raWFZKpuvWFdZNgo3a53v?usp=drive_link](https://drive.google.com/drive/folders/1E7ULl0l5Ev5raWFZKpuvWFdZNgo3a53v?usp=drive_link).
 
 ### Contribuidores
 
@@ -254,8 +257,7 @@ O Gateway é a única porta de entrada do sistema para requisições externas. E
 
 **Responsabilidades:**
 - **Roteamento:** direciona cada chamada ao BFF correspondente.
-- **Autenticação:** valida o token antes de repassar a requisição.
-- **Rate limiting:** limita o volume de requisições e responde `429` ao exceder, protegendo contra abusos e sobrecarga.
+- **Planejado:** validação de token e limitação de requisições no Gateway. As integrações de demonstração usam `X-Usuario-Id` quando precisam identificar o usuário.
 - **Isolamento:** mantém a estrutura interna oculta; o cliente só conhece o gateway.
 
 ---
@@ -362,9 +364,14 @@ Se o serviço gravasse e depois enviasse a notificação, uma falha entre as dua
 - Após o limite de tentativas, marca como `FALHA` para análise manual.
 - A entrega é *at-least-once*, então o consumidor deve ser **idempotente**: registra os ids de eventos já processados e responde `200` sem reprocessar quando recebe um repetido.
 
+> **Implementação (Parte 4):** a escrita no PostgreSQL, a outbox, o Relay e a projeção no MongoDB, com o roteiro de demonstração, estão documentados em [`docs/CQRS.md`](docs/CQRS.md).
+
 ---
 
 ## SAGA de Evolução de Paciente para Mentor
+
+> Roteiro prático para executar e verificar os dois cenários: [`docs/SAGA-DEMO.md`](docs/SAGA-DEMO.md).
+
 
 O processo que transforma um paciente em mentor é estruturado como uma transação de negócio de longa duração gerenciada por meio da arquitetura SAGA orquestrada, pois ter um componente central dá uma visibilidade mais clara do estado da SAGA e dispensa a necessidade de adicionar regras extras nos microsserviços o que o deixaria mais complexo, cujo controle se inicia no microsserviço de atendimento. Assim, o fluxo é iniciado quando um paciente que já estava em processo de recuperação e participa de uma consulta com um profissional de psicologia, e além de mostrar e provar que está totalmente recuperado, também mostra a vontade e vocação de se tornar um mentor, inspirando os pacientes a se recuperarem como ele, com isso, este profissional avalia que o paciente atingiu um estágio avançado de recuperação e está plenamente apto a compartilhar suas experiências, registrando a sua aprovação de evolução de status diretamente no microsserviço de atendimento, que é o gatilho inicial. Desta forma, a partir dessa validação inicial, o orquestrador percebe a mudança e assume o controle, acionando sequencialmente os demais domínios envolvidos para promover a alteração do perfil do usuário. Portanto, no segundo passo, o orquestrador solicita ao microsserviço de usuários que atualize o papel do usuário de paciente para mentor e em seguida, o fluxo avança para o microsserviço de comunidade, que atua como o pivô da SAGA, realizando as configurações necessárias e criando o perfil oficial de mentor na base comunitária, este ponto pivô representa o momento crítico e sem retorno do processo, ou seja, caso o microsserviço de comunidade aceite a transação, a promoção é considerada definitiva e não pode mais ser cancelada por regras de negócio, assim, se a operação de pivô for concluída com sucesso, o orquestrador direciona a etapa final para o microsserviço de gamificação, que libera o acesso à trilha de estudos exclusiva voltada para a capacitação de novos mentores, porém, se ocorrer qualquer falha de validação ou recusa de negócio antes ou durante o passo pivô, o orquestrador executa automaticamente transações compensatórias em ordem inversa, desfazendo as alterações de papéis aplicadas anteriormente e garantindo que o sistema retorne a um estado consistente e previsível, mas se for após a confirmação do pivô, o erro é contornado com mecânicas como retentativas. O pivô foi escolhido como o serviço de comunidade, pois este é o serviço mais custoso computacionalmente na evolução do status do usuário, o que garante que qualquer problema estrutural pesado seja resolvido antes de liberar as etapas finais na gamificação. 
 
@@ -585,6 +592,7 @@ be-darce/
 │   ├── admin/
 │   └── portal/
 ├── gateway/
+├── scripts/
 ├── services/
 │   ├── atendimento-service/
 │   ├── comunidade-service/
@@ -770,6 +778,75 @@ docker compose down
 `docker compose down` encerra os containers, mas preserva os volumes nomeados dos bancos.
 
 docker compose down preserva os volumes dos bancos.
+
+---
+
+## Contribuições na Parte 4
+
+### Caio Bueno Finocchio Martins
+
+- **Gateway e frontends:** o Portal usa `/portal/v1` via `bff-portal` e o Painel Administrativo usa `/admin/v1` via `bff-admin`. Os BFFs encaminham as chamadas aos serviços pelo Gateway interno.
+- **Gamificação no Portal:** exibe trilhas, etapas, questionários, pontos e nível. Após confirmar a conclusão, consulta o progresso até a projeção refletir a nova versão e atualiza a lista de etapas. Se a sincronização demorar além das tentativas, informa que a conclusão foi registrada.
+- **SAGA no Painel Administrativo:** a interface de demonstração solicita a promoção, permite simular a rejeição em Comunidade e consulta o estado e os passos da execução pelo orquestrador. Os cenários de sucesso e compensação estão no [roteiro da SAGA](docs/SAGA-DEMO.md).
+- **Correções do assistente virtual:** habilitou as consultas de perfil e mentores pelo Gateway interno, a recuperação do histórico no Portal e a renderização de Markdown sem HTML bruto. Ajustou o retry para respeitar `Retry-After` em respostas `429` do provedor, a contabilização de tokens e custos e a tolerância do healthcheck durante a ingestão inicial.
+- **Validação do RAG:** duas rodadas com cinco perguntas compararam respostas sem recuperação e com recuperação de até [1 trecho](docs/avaliacao-rag/k1.jsonl) ou [4 trechos](docs/avaliacao-rag/k4.jsonl). Os registros incluem respostas, fontes recuperadas, latência, tokens e custo estimado. São rodadas distintas da análise com agente apresentada abaixo.
+
+### Diego Alves de Oliveira
+
+- **CQRS da Gamificação:** implementou o modelo de escrita em PostgreSQL, a Outbox na mesma transação da conclusão e o Relay HTTP que atualiza a projeção de leitura em MongoDB. A projeção usa o identificador do evento e a versão do agregado para tratar reenvios e descartar estados antigos.
+- **Integração e testes:** o Portal usa a escrita para concluir etapas e a leitura para consultar trilhas e progresso. A demonstração nos serviços registrou sincronização entre 0,3 s e 1,1 s, além de testes de reenvio, versões antigas, conclusões simultâneas e operação com duas réplicas de escrita. Os resultados e o fluxo pelo Portal estão em [`docs/CQRS.md`](docs/CQRS.md).
+
+---
+
+## Integração de LLM
+
+### 1. Propósito no Domínio
+
+O `assistente-service` apoia usuários e familiares no contexto de transtorno do jogo e apostas online na BEDARCE: responde com base em materiais de referência, consulta dados operacionais (progresso/trilha e mentores) via Gateway interno (`8081`), registra métricas em PostgreSQL e inclui avisos de limitação sem substituir acompanhamento clínico.
+
+### 2. Pipeline RAG (`pgvector`) e LangChain
+
+* **Ingestão:** Segmentação dos documentos de `base_conhecimento/` (`.md` e `.pdf`) com metadados de fonte e *advisory lock* no PostgreSQL para evitar concorrência na inicialização.
+* **Embeddings:** Modelo `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` via `langchain-huggingface`, pré-carregado no *build* e executado em CPU no *runtime*.
+* **Armazenamento e Recuperação:** Vetores persistidos em PostgreSQL + `pgvector`, recuperados pela *tool* `consultar_base_conhecimento`.
+* **Composição e Agente:** Fluxo construído com LangChain/LangGraph, histórico persistido por usuário e seleção dinâmica de *tools* (`consultar_base_conhecimento`, consulta de perfil/trilha e consulta de mentores) quando a intenção exige busca documental, dados do sistema ou combinação de ambos.
+
+### 3. LLM como Serviço Distribuído, Latência e Custo
+
+* **Resiliência:** *Timeout* configurável, *retry* com *backoff* exponencial (`tenacity`), *circuit breaker*, cache por chave no PostgreSQL com TTL e *fallback* quando o provedor falha ou o circuito abre.
+* **Latência e Custo:** O `MetricasCallback` grava na tabela `metricas_execucoes` os tempos de RAG, *tools*, LLM e total, além de tokens de entrada/saída, custo estimado por operação e projeções mensais em escala.
+
+---
+
+## Análise Comparativa das 5 Perguntas (`avaliacao_mensagens.jsonl`)
+
+### Tabela Consolidada
+
+| Pergunta | Modo | Fontes / Tools | Latência / Tempo | Tokens (In / Out) | Qualidade e Fidelidade ao Domínio |
+| --- | --- | --- | --- | --- | --- |
+| **P1: Promoção a mentor** | `llm_pura` | Nenhuma | 1295,49 ms (total) | 17 / 511 | **Alucina** regras inexistentes (formulário, curso de 4 semanas, 2h/mês, certificado). |
+| **P1: Promoção a mentor** | `com_rag` | `03_rede_apoio_mentoria.md` | 150,44 ms (RAG) | 17 / 364 | **Fiel:** progresso/estabilidade, desejo de ajudar, avaliação psicológica e preparo. |
+| **P1: Promoção a mentor** | `com_agente` | `consultar_base_conhecimento` | 4316,64 ms (total) | 17 / 554 | **Fiel e acionável:** mantém critérios e sugere próximos passos; latência maior. |
+| **P2: Impulso após perda** | `llm_pura` | Nenhuma | 1466,20 ms (total) | 35 / 10 | **Recusa genérica/inadequada** para pedido de orientação de autocontrole. |
+| **P2: Impulso após perda** | `com_rag` | `impacto-social-jogos-azar.pdf` | 26,04 ms (RAG) | 35 / 297 | **Fiel:** aborda "perseguir perdas" (p. 102) e medidas práticas de contenção. |
+| **P2: Impulso após perda** | `com_agente` | `consultar_base_conhecimento` | 4734,77 ms (total) | 35 / 883 | **Completa:** une gatilho de perda, técnicas de pausa/TCC, apoio e aviso clínico. |
+| **P3: Mentor vs. Psicólogo** | `llm_pura` | Nenhuma | 750,79 ms (total) | 23 / 275 | **Desviada:** trata mentor como foco profissional/carreira, fora da BEDARCE. |
+| **P3: Mentor vs. Psicólogo** | `com_rag` | `01_plataforma_bedarce.md` | 22,35 ms (RAG) | 23 / 504 | **Fiel:** distingue apoio por experiência de pares vs. acompanhamento clínico. |
+| **P3: Mentor vs. Psicólogo** | `com_agente` | `consultar_base_conhecimento` | 4794,29 ms (total) | 23 / 613 | **Detalhada:** compara papéis, frequência, escopo e regulação com clareza. |
+| **P4: Pontos e trilhas** | `llm_pura` | Nenhuma | 948,91 ms (total) | 13 / 406 | **Genérica:** inventa exemplos de curso/matemática/bônus sem base na BEDARCE. |
+| **P4: Pontos e trilhas** | `com_rag` | `01_plataforma_bedarce.md` | 49,44 ms (RAG) | 13 / 34 | **Conservadora/omissa:** recupera trecho insuficiente e admite falta de informação. |
+| **P4: Pontos e trilhas** | `com_agente` | `consultar_perfil_e_trilha`, `consultar_base_conhecimento` | 14556,93 ms (total) | 13 / 1166 | **Abrangente porém lenta:** usa 2 *tools* e gera resposta longa (1166 tokens de saída). |
+| **P5: Gatilhos emocionais** | `llm_pura` | Nenhuma | 1127,59 ms (total) | 26 / 283 | **Genérica:** enumera gatilhos comuns sem ancoragem explícita nas fontes da base. |
+| **P5: Gatilhos emocionais** | `com_rag` | `impacto-social-jogos-azar.pdf` | 40,26 ms (RAG) | 26 / 98 | **Sub-recuperação:** o trecho obtido (p. 115) não cobre todos os gatilhos do corpus. |
+| **P5: Gatilhos emocionais** | `com_agente` | `consultar_base_conhecimento` | 4255,09 ms (total) | 26 / 665 | **Fiel e estruturada:** mapeia euforia, escape, culpa, frustração e controle com fontes. |
+
+### Conclusão da Avaliação
+
+* **Sem recuperação (`llm_pura`):** É a mais rápida (750 ms a 1466 ms), mas apresenta **alucinação de regras**, **desvio de domínio** ou **recusa fora de contexto**.
+* **Com recuperação direta (`com_rag`):** Reduz drasticamente invenções ao ancorar nos documentos, mantendo a recuperação em dezenas/centenas de milissegundos, mas pode sofrer com **recuperação parcial** quando a consulta exige múltiplas seções.
+* **Com agente (`com_agente`):** Entrega as respostas mais alinhadas ao domínio e orientadas à ação, inclusive acionando *tools* do sistema, mas eleva a latência (4,25 s a 14,56 s) e o volume de tokens de saída (554 a 1166 tokens), exigindo cache e *timeouts* bem ajustados.
+
+---
 
 ## Demonstração em Vídeo
 

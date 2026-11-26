@@ -12,3 +12,16 @@
 npm-debug.log*
 yarn-debug.log*
 pnpm-debug.log*
+
+# Python / Ambientes virtuais
+**/venv/
+**/.venv/
+**/env/
+**/.env_venv/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+
+# Bancos vetoriais e dados locais
+**/chroma_db/

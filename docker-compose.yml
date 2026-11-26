@@ -78,6 +78,23 @@ services:
       retries: 15
     restart: unless-stopped
 
+  db-assistente:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB_ASSISTENTE}
+    volumes:
+      - pg_assistente_data:/var/lib/postgresql/data
+    networks:
+      - assistente-db-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
   usuarios-service:
     build:
       context: .
@@ -141,6 +158,10 @@ services:
       DB_USER: ${POSTGRES_USER}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_NAME: ${POSTGRES_DB_GAMIFICACAO}
+      GAMIFICACAO_LEITURA_URL: http://gamificacao-leitura-service:${PORT_GAMIFICACAO_LEITURA}
+      RELAY_INTERVALO_MS: ${RELAY_INTERVALO_MS:-1000}
+      RELAY_LOTE: ${RELAY_LOTE:-50}
+      RELAY_MAX_TENTATIVAS: ${RELAY_MAX_TENTATIVAS:-10}
     expose:
       - "${PORT_GAMIFICACAO_ESCRITA}"
     depends_on:
@@ -212,6 +233,14 @@ services:
     depends_on:
       gateway:
         condition: service_healthy
+      atendimento-service:
+        condition: service_healthy
+      usuarios-service:
+        condition: service_healthy
+      comunidade-service:
+        condition: service_healthy
+      gamificacao-escrita-service:
+        condition: service_healthy
     networks:
       - app-net
     healthcheck:
@@ -219,6 +248,48 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+    restart: unless-stopped
+
+  assistente-service:
+    build:
+      context: .
+      dockerfile: services/assistente-service/Dockerfile
+    environment:
+      PORT_ASSISTENTE: ${PORT_ASSISTENTE:-5006}
+      GATEWAY_INTERNAL_URL: http://gateway:${GATEWAY_INTERNAL_PORT}
+      DB_HOST: db-assistente
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DB_ASSISTENTE}
+      COLECAO_VETORIAL: ${COLECAO_VETORIAL:-bedarce_conhecimento}
+      CACHE_TTL_SEGUNDOS: ${CACHE_TTL_SEGUNDOS:-600}
+      LLM_PROVIDER: ${LLM_PROVIDER:-groq}
+      LLM_MODEL: ${LLM_MODEL:-openai/gpt-oss-20b}
+      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.2}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-15}
+      LLM_FALLBACK_PROVIDER: ${LLM_FALLBACK_PROVIDER:-}
+      LLM_FALLBACK_MODEL: ${LLM_FALLBACK_MODEL:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    expose:
+      - "${PORT_ASSISTENTE:-5006}"
+    depends_on:
+      db-assistente:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy
+    networks:
+      - app-net
+      - assistente-db-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:${PORT_ASSISTENTE:-5006}/health', timeout=2).read()"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 600s
     restart: unless-stopped
 
   bff-portal:
@@ -278,6 +349,7 @@ services:
       PORT_GAMIFICACAO_LEITURA: ${PORT_GAMIFICACAO_LEITURA}
       PORT_COMUNIDADE: ${PORT_COMUNIDADE}
       PORT_SAGA: ${PORT_SAGA}
+      PORT_ASSISTENTE: ${PORT_ASSISTENTE:-5006}
     expose:
       - "8080"
       - "${GATEWAY_INTERNAL_PORT}"
@@ -350,6 +422,9 @@ networks:
   comunidade-db-net:
     name: bedarce-comunidade-db-net
     internal: true
+  assistente-db-net:
+    name: bedarce-assistente-db-net
+    internal: true
 
 volumes:
   pg_usuarios_data:
@@ -357,3 +432,4 @@ volumes:
   pg_gamificacao_data:
   mongo_gamificacao_data:
   mongo_comunidade_data:
+  pg_assistente_data:
