@@ -19,6 +19,7 @@
 - [Estrutura do projeto](#estrutura-de-pastas)
 - [Containerização e orquestração](#conteinerização-com-docker-compose)
 - [Como executar](#como-rodar-o-projeto)
+- [Integração de LLM](#integração-de-llm)
 - [Demonstração em vídeo](#demonstração-em-vídeo)
 - [Evolução Arquitetural](#mudanças-na-arquitetura-do-projeto)
 
@@ -800,51 +801,259 @@ docker compose down preserva os volumes dos bancos.
 
 ## Integração de LLM
 
-### 1. Propósito no Domínio
+O `assistente-service` oferece apoio informativo a pacientes e familiares no contexto de transtorno do jogo e apostas online. Ele combina recuperação de materiais próprios da BEDARCE com consultas a dados operacionais dos microsserviços. Não é um chatbot decorativo: usa as informações recuperadas para responder dúvidas sobre a plataforma, prevenção de recaídas, autocontrole e recursos de apoio. O assistente informa que é uma IA limitada, recusa solicitações fora do domínio e não substitui atendimento psicológico, psiquiátrico ou médico nem os canais de apoio em uma crise.
 
-O `assistente-service` apoia usuários e familiares no contexto de transtorno do jogo e apostas online na BEDARCE: responde com base em materiais de referência, consulta dados operacionais (progresso/trilha e mentores) via Gateway interno (`8081`), registra métricas em PostgreSQL e inclui avisos de limitação sem substituir acompanhamento clínico.
+### Arquitetura de Comunicação, PostgreSQL e Gateway
 
-### 2. Pipeline RAG (`pgvector`) e LangChain
+O assistente virtual utiliza um banco PostgreSQL dedicado com a extensão `vector` (`pgvector`) para centralizar os vetores da base de conhecimento, o histórico de conversas, o cache de respostas e as métricas de execução. O acesso ao banco é dividido entre a camada vetorial, usada para armazenar e consultar embeddings com metadados em JSONB, e o pool de conexões transacionais, responsável pelas tabelas operacionais do serviço.
 
-* **Ingestão:** Segmentação dos documentos de `base_conhecimento/` (`.md` e `.pdf`) com metadados de fonte e *advisory lock* no PostgreSQL para evitar concorrência na inicialização.
-* **Embeddings:** Modelo `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` via `langchain-huggingface`, pré-carregado no *build* e executado em CPU no *runtime*.
-* **Armazenamento e Recuperação:** Vetores persistidos em PostgreSQL + `pgvector`, recuperados pela *tool* `consultar_base_conhecimento`.
-* **Composição e Agente:** Fluxo construído com LangChain/LangGraph, histórico persistido por usuário e seleção dinâmica de *tools* (`consultar_base_conhecimento`, consulta de perfil/trilha e consulta de mentores) quando a intenção exige busca documental, dados do sistema ou combinação de ambos.
+Na inicialização da aplicação, o serviço aguarda o banco ficar disponível, aplica bloqueios preventivos no PostgreSQL para evitar conflitos quando múltiplas instâncias sobem ao mesmo tempo, habilita a extensão vetorial e cria tabelas e índices de forma idempotente. O mesmo controle evita que instâncias concorrentes dupliquem a indexação da base de conhecimento, mantendo os dados persistidos em volume do Docker entre reinicializações.
 
-### 3. LLM como Serviço Distribuído, Latência e Custo
+A comunicação com o restante da plataforma ocorre sem acesso direto aos bancos de outros microsserviços. As requisições do portal percorrem o fluxo do frontend ao Gateway público, passam pelo BFF do portal, seguem pelo Gateway interno (`8081`) e chegam ao assistente. Quando o assistente precisa buscar informações de outros módulos — como perfil do usuário, progresso em trilhas, trilhas disponíveis ou mentores — ele também aciona o Gateway interno propagando o identificador do usuário para manter o contexto da sessão.
 
-* **Resiliência:** *Timeout* configurável, *retry* com *backoff* exponencial (`tenacity`), *circuit breaker*, cache por chave no PostgreSQL com TTL e *fallback* quando o provedor falha ou o circuito abre.
-* **Latência e Custo:** O `MetricasCallback` grava na tabela `metricas_execucoes` os tempos de RAG, *tools*, LLM e total, além de tokens de entrada/saída, custo estimado por operação e projeções mensais em escala.
+### Pipeline RAG: Ingestão, Embeddings, pgvector e Recuperação
 
----
+A base de conhecimento própria reúne materiais da BEDARCE e referências técnicas sobre transtorno do jogo, impulsividade e Terapia Cognitivo-Comportamental (TCC). Durante a ingestão, o serviço percorre o diretório configurado e lê arquivos Markdown em UTF-8 e PDFs página a página, descartando páginas vazias e registrando metadados de origem como arquivo, caminho, tipo, título e número da página.
 
-## Análise Comparativa das 5 Perguntas (`avaliacao_mensagens.jsonl`)
+Em seguida, os textos são divididos em blocos menores com sobreposição entre trechos, respeitando divisões de seção e parágrafo para não perder o sentido e atribuindo um identificador sequencial a cada parte. Cada bloco passa por um modelo de embeddings multilíngue leve, pré-carregado no *build* da imagem e executado em CPU com vetores normalizados. Como o mesmo modelo gera os vetores dos documentos e o vetor da pergunta do usuário, a busca no `pgvector` encontra os trechos semanticamente mais próximos.
 
-### Tabela Consolidada
+Se a coleção vetorial já estiver preenchida na inicialização, o serviço reaproveita os vetores existentes sem reprocessar tudo, permitindo reindexação completa quando solicitado. Na consulta, os trechos recuperados são reunidos com a identificação das fontes e páginas para fundamentar a resposta, tanto em um fluxo linear de recuperação e geração quanto por meio da ferramenta de consulta à base usada pelo agente.
 
-| Pergunta | Modo | Fontes / Tools | Latência / Tempo | Tokens (In / Out) | Qualidade e Fidelidade ao Domínio |
-| --- | --- | --- | --- | --- | --- |
-| **P1: Promoção a mentor** | `llm_pura` | Nenhuma | 1295,49 ms (total) | 17 / 511 | **Alucina** regras inexistentes (formulário, curso de 4 semanas, 2h/mês, certificado). |
-| **P1: Promoção a mentor** | `com_rag` | `03_rede_apoio_mentoria.md` | 150,44 ms (RAG) | 17 / 364 | **Fiel:** progresso/estabilidade, desejo de ajudar, avaliação psicológica e preparo. |
-| **P1: Promoção a mentor** | `com_agente` | `consultar_base_conhecimento` | 4316,64 ms (total) | 17 / 554 | **Fiel e acionável:** mantém critérios e sugere próximos passos; latência maior. |
-| **P2: Impulso após perda** | `llm_pura` | Nenhuma | 1466,20 ms (total) | 35 / 10 | **Recusa genérica/inadequada** para pedido de orientação de autocontrole. |
-| **P2: Impulso após perda** | `com_rag` | `impacto-social-jogos-azar.pdf` | 26,04 ms (RAG) | 35 / 297 | **Fiel:** aborda "perseguir perdas" (p. 102) e medidas práticas de contenção. |
-| **P2: Impulso após perda** | `com_agente` | `consultar_base_conhecimento` | 4734,77 ms (total) | 35 / 883 | **Completa:** une gatilho de perda, técnicas de pausa/TCC, apoio e aviso clínico. |
-| **P3: Mentor vs. Psicólogo** | `llm_pura` | Nenhuma | 750,79 ms (total) | 23 / 275 | **Desviada:** trata mentor como foco profissional/carreira, fora da BEDARCE. |
-| **P3: Mentor vs. Psicólogo** | `com_rag` | `01_plataforma_bedarce.md` | 22,35 ms (RAG) | 23 / 504 | **Fiel:** distingue apoio por experiência de pares vs. acompanhamento clínico. |
-| **P3: Mentor vs. Psicólogo** | `com_agente` | `consultar_base_conhecimento` | 4794,29 ms (total) | 23 / 613 | **Detalhada:** compara papéis, frequência, escopo e regulação com clareza. |
-| **P4: Pontos e trilhas** | `llm_pura` | Nenhuma | 948,91 ms (total) | 13 / 406 | **Genérica:** inventa exemplos de curso/matemática/bônus sem base na BEDARCE. |
-| **P4: Pontos e trilhas** | `com_rag` | `01_plataforma_bedarce.md` | 49,44 ms (RAG) | 13 / 34 | **Conservadora/omissa:** recupera trecho insuficiente e admite falta de informação. |
-| **P4: Pontos e trilhas** | `com_agente` | `consultar_perfil_e_trilha`, `consultar_base_conhecimento` | 14556,93 ms (total) | 13 / 1166 | **Abrangente porém lenta:** usa 2 *tools* e gera resposta longa (1166 tokens de saída). |
-| **P5: Gatilhos emocionais** | `llm_pura` | Nenhuma | 1127,59 ms (total) | 26 / 283 | **Genérica:** enumera gatilhos comuns sem ancoragem explícita nas fontes da base. |
-| **P5: Gatilhos emocionais** | `com_rag` | `impacto-social-jogos-azar.pdf` | 40,26 ms (RAG) | 26 / 98 | **Sub-recuperação:** o trecho obtido (p. 115) não cobre todos os gatilhos do corpus. |
-| **P5: Gatilhos emocionais** | `com_agente` | `consultar_base_conhecimento` | 4255,09 ms (total) | 26 / 665 | **Fiel e estruturada:** mapeia euforia, escape, culpa, frustração e controle com fontes. |
+### Chains, Agente e Ferramentas do Sistema
 
-### Conclusão da Avaliação
+No fluxo linear de RAG, a composição encadeia a recuperação dos trechos, a formatação do contexto com fontes, o template de *prompt*, o modelo de linguagem e a extração do texto final. Já no modo com agente, o fluxo ganha decisão dinâmica: em vez de seguir um caminho fixo, o agente avalia a mensagem do usuário e decide quais ferramentas acionar antes de formular a resposta.
 
-* **Sem recuperação (`llm_pura`):** É a mais rápida (750 ms a 1466 ms), mas apresenta **alucinação de regras**, **desvio de domínio** ou **recusa fora de contexto**.
-* **Com recuperação direta (`com_rag`):** Reduz drasticamente invenções ao ancorar nos documentos, mantendo a recuperação em dezenas/centenas de milissegundos, mas pode sofrer com **recuperação parcial** quando a consulta exige múltiplas seções.
-* **Com agente (`com_agente`):** Entrega as respostas mais alinhadas ao domínio e orientadas à ação, inclusive acionando *tools* do sistema, mas eleva a latência (4,25 s a 14,56 s) e o volume de tokens de saída (554 a 1166 tokens), exigindo cache e *timeouts* bem ajustados.
+O agente é compilado uma única vez por processo e guiado por diretrizes de identidade, escopo e cautela da BEDARCE, deixando claro que é uma IA com limitações, que não substitui atendimento psicológico ou médico e que deve recusar assuntos fora do domínio. Ele conta com ferramentas para buscar na base de conhecimento, consultar o perfil e o progresso do usuário na trilha, listar trilhas e mentores disponíveis, apoiar conceitos de psicologia quando necessário e orientar busca por atendimento psicológico.
+
+Para dar continuidade à conversa, o serviço lê no PostgreSQL as cinco interações mais recentes do usuário antes de invocar o agente e grava o novo par de pergunta e resposta após uma saída válida, mantendo o histórico limitado a no máximo 50 mensagens por usuário.
+
+As *tools* disponíveis são:
+
+| Tool | Uso |
+| --- | --- |
+| `consultar_base_conhecimento` | Recupera trechos relevantes e fontes no `pgvector`. |
+| `consultar_perfil_e_trilha` | Consulta perfil e progresso nos serviços de usuários e gamificação via Gateway. |
+| `consultar_trilhas_disponiveis` | Consulta trilhas ativas no serviço de gamificação via Gateway. |
+| `listar_mentores_disponiveis` | Consulta mentores no serviço de comunidade via Gateway. |
+| `sugerir_atendimento_psicologico` | Orienta a busca por acompanhamento profissional; não inventa uma lista de profissionais. |
+| `consultar_conceito_psicologia` | Consulta conceitos externos dentro do escopo permitido de psicologia e TCC. |
+
+O agente é adequado ao domínio porque uma pergunta pode exigir apenas conteúdo documental, dados atuais do sistema ou ambos. Por exemplo, para “qual é meu progresso na trilha e quais mentores estão disponíveis?”, o agente pode consultar `consultar_perfil_e_trilha` e `listar_mentores_disponiveis`, depois reunir os resultados em uma resposta. A execução limita a recursão a 12 passos. `_extrair_resposta_e_tools()` registra as ferramentas acionadas e extrai as fontes retornadas pela consulta RAG.
+
+### LLM Remoto como Dependência Distribuída: Resiliência, Latência e Custo
+
+O container `assistente-service` encapsula a API do assistente; o modelo de chat é um provedor configurável (`LLM_PROVIDER` e `LLM_MODEL`), não pesos de LLM executados localmente. A configuração de exemplo usa Groq com `openai/gpt-oss-20b`. O provedor é uma dependência remota sujeita a limites de taxa, *timeouts* e indisponibilidade, e a chave correspondente deve ser definida no arquivo `.env` local, nunca commitada.
+
+No endpoint `POST /v1/assistente/mensagem`, as proteções são aplicadas nesta ordem:
+
+1. **Cache:** `CacheRespostaTTL` normaliza usuário e mensagem, calcula uma chave SHA-256 e procura uma resposta não expirada em `cache_respostas`. Respostas válidas são compartilhadas entre réplicas pelo PostgreSQL; respostas de *fallback* não são armazenadas.
+2. **Retry e *circuit breaker*:** `executar_com_resiliencia()` aplica até três tentativas com *backoff* exponencial para erros identificados como transitórios e controla o `CircuitBreakerLLM`, em memória por réplica. Após três execuções consecutivas com falha, o circuito fica `OPEN` por 30 segundos; depois permite novas tentativas em `HALF_OPEN`.
+3. **Fallback:** se o provedor falhar ou o circuito estiver aberto, `gerar_resposta_fallback()` consulta diretamente o `pgvector` e devolve uma mensagem segura com o trecho e a fonte encontrados, sem afirmar que a resposta foi gerada pelo LLM.
+
+O *timeout* do provedor é configurável por `LLM_TIMEOUT_SECONDS`. `MetricasCallback` coleta tokens e tempos das ferramentas; `ColetorMetricas` persiste as métricas em `metricas_execucoes`. O endpoint `GET /v1/assistente/metricas` retorna latências, percentis p50/p95, tokens, custo estimado, taxa de cache, *fallbacks* e projeções para 1.000, 10.000, 100.000 e 1.000.000 operações por mês. Os custos são estimativas baseadas na tabela de preços configurada no projeto; não incluem infraestrutura nem substituem a fatura do provedor.
+
+Na avaliação abaixo, os tempos `com_rag` representam a etapa RAG informada pelo experimento, enquanto `llm_pura` e `com_agente` mostram tempos totais. Portanto, esses valores não são diretamente comparáveis como latência ponta a ponta. Para a demonstração, consulte também as métricas consolidadas do endpoint e registre o provedor/modelo utilizado.
+
+### Como Testar pelo Terminal
+
+Execute os comandos na raiz do repositório, com o sistema levantado e uma chave válida do provedor configurada no `.env`. Se ainda não houver `.env`, copie `.env.example` para `.env` e preencha a chave adequada (`GROQ_API_KEY`, `GOOGLE_API_KEY` ou `OPENAI_API_KEY`). Não publique nem versione esse arquivo.
+
+#### 1. Verificar a saúde do assistente
+
+Este comando consulta o diagnóstico do serviço pelo Gateway e pelo BFF. A resposta deve indicar que o `assistente-service` está saudável.
+
+```powershell
+Invoke-RestMethod -Uri "http://localhost:8080/portal/v1/diagnostics/services/assistente/health"
+```
+
+#### 2. Verificar a conexão com o banco
+
+Confirma, pelo endpoint de diagnóstico, que o serviço consegue se conectar ao PostgreSQL dedicado.
+
+```powershell
+Invoke-RestMethod -Uri "http://localhost:8080/portal/v1/diagnostics/services/assistente/db"
+```
+
+#### 3. Conferir se a extensão `pgvector` está habilitada
+
+Consulta a extensão `vector` diretamente no banco do assistente e mostra sua versão.
+
+```powershell
+docker compose exec db-assistente psql -U bedarce -d bedarce_assistente `
+  -c "SELECT extname, extversion FROM pg_extension WHERE extname = 'vector';"
+```
+
+#### 4. Conferir os vetores indexados
+
+Conta quantos embeddings estão armazenados em cada coleção. Um resultado com vetores confirma que a base de conhecimento foi ingerida.
+
+```powershell
+docker compose exec db-assistente psql -U bedarce -d bedarce_assistente `
+  -c "SELECT c.name AS colecao, COUNT(e.uuid) AS total_vetores FROM langchain_pg_collection c LEFT JOIN langchain_pg_embedding e ON e.collection_id = c.uuid GROUP BY c.name;"
+```
+
+#### 5. Consultar o histórico de conversas
+
+Mostra as seis interações mais recentes persistidas no banco, com o conteúdo limitado a 90 caracteres.
+
+```powershell
+docker compose exec db-assistente psql -U bedarce -d bedarce_assistente `
+  -c "SELECT usuario_id, papel, LEFT(conteudo, 90) AS trecho, criado_em FROM historico_conversas ORDER BY id DESC LIMIT 6;"
+```
+
+#### 6. Enviar uma mensagem ao assistente
+
+Percorre o Gateway público, o BFF do portal, o Gateway interno e o agente. Confira a resposta, as fontes, as ferramentas acionadas e se houve *fallback*.
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri "http://localhost:8080/portal/v1/assistente/mensagem" `
+  -Headers @{
+    "X-Usuario-Id" = "demo-portal-bedarce"
+    "Content-Type" = "application/json"
+  } `
+  -Body '{"mensagem":"Como funciona a promoção de um paciente para mentor na BEDARCE?"}' |
+  Select-Object cache_hit, fallback_utilizado, fontes, tools_chamadas, resposta, metricas
+```
+
+#### 7. Verificar o cache de respostas
+
+Execute este mesmo comando duas vezes. Se a primeira resposta foi gerada pelo LLM e ainda está dentro do TTL, a segunda deve retornar `cache_hit = True`. Respostas de *fallback* não são armazenadas.
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri "http://localhost:8080/portal/v1/assistente/mensagem" `
+  -Headers @{
+    "X-Usuario-Id" = "demo-portal-bedarce"
+    "Content-Type" = "application/json"
+  } `
+  -Body '{"mensagem":"Como funciona a promoção de um paciente para mentor na BEDARCE?"}' |
+  Select-Object cache_hit, fallback_utilizado, metricas
+```
+
+#### 8. Testar a consulta de dados operacionais
+
+Pergunta sobre progresso e mentores. Confira se `tools_chamadas` lista as ferramentas acionadas e se a resposta contém os dados retornados pelos serviços.
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri "http://localhost:8080/portal/v1/assistente/mensagem" `
+  -Headers @{
+    "X-Usuario-Id" = "demo-portal-bedarce"
+    "Content-Type" = "application/json"
+  } `
+  -Body '{"mensagem":"Qual é meu progresso na trilha e quais mentores estão disponíveis?"}' |
+  Select-Object tools_chamadas, fontes, resposta, metricas
+```
+
+#### 9. Executar a avaliação comparativa
+
+Executa as cinco perguntas nos modos `llm_pura`, `com_rag` e `com_agente`. O script pode chamar o provedor configurado e consumir tokens.
+
+```powershell
+docker compose exec assistente-service python scripts/avaliar_rag.py
+```
+
+#### 10. Consultar métricas agregadas
+
+Mostra as latências, percentis, tokens, custo estimado, taxa de cache, *fallbacks* e projeções mensais registrados pelo assistente.
+
+```powershell
+docker compose exec assistente-service python -c "import httpx, json; print(json.dumps(httpx.get('http://127.0.0.1:5006/v1/assistente/metricas').json(), indent=2, ensure_ascii=False))"
+```
+
+#### 11. Testar *fallback* e *circuit breaker*
+
+Este teste altera temporariamente o provedor para uma URL local indisponível. Antes de começar, anote a configuração atual do provedor no `.env` para restaurá-la ao final. Altere `LLM_PROVIDER=ollama`, `LLM_MODEL=llama3.2` e `OLLAMA_BASE_URL=http://127.0.0.1:1`; em seguida, recrie somente o assistente:
+
+```powershell
+docker compose up -d --no-deps --force-recreate assistente-service
+```
+
+Envie a primeira solicitação. Ela deve falhar ao conectar ao provedor e responder usando o *fallback* com recuperação no `pgvector`.
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri "http://localhost:8080/portal/v1/assistente/mensagem" `
+  -Headers @{
+    "X-Usuario-Id" = "usuario-teste-resiliencia"
+    "Content-Type" = "application/json"
+  } `
+  -Body '{"mensagem":"Teste de indisponibilidade do provedor, rodada 1"}' |
+  Select-Object fallback_utilizado, fontes, metricas
+```
+
+Envie uma segunda solicitação, com uma mensagem diferente. Cada solicitação malsucedida conta como uma falha para o circuito; cada uma também pode realizar até três tentativas internas com *backoff*.
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri "http://localhost:8080/portal/v1/assistente/mensagem" `
+  -Headers @{
+    "X-Usuario-Id" = "usuario-teste-resiliencia"
+    "Content-Type" = "application/json"
+  } `
+  -Body '{"mensagem":"Teste de indisponibilidade do provedor, rodada 2"}' |
+  Select-Object fallback_utilizado, fontes, metricas
+```
+
+Envie a terceira solicitação. Após três operações malsucedidas, o circuito deve ficar `OPEN` por 30 segundos.
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri "http://localhost:8080/portal/v1/assistente/mensagem" `
+  -Headers @{
+    "X-Usuario-Id" = "usuario-teste-resiliencia"
+    "Content-Type" = "application/json"
+  } `
+  -Body '{"mensagem":"Teste de indisponibilidade do provedor, rodada 3"}' |
+  Select-Object fallback_utilizado, fontes, metricas
+```
+
+Consulte o estado do circuito e os logs para confirmar as falhas e as respostas de *fallback*.
+
+```powershell
+docker compose exec assistente-service python -c "import httpx; m = httpx.get('http://127.0.0.1:5006/v1/assistente/metricas').json(); print('Estado CB:', m['circuit_breaker_estado'], '| Total fallbacks:', m['total_fallbacks'])"
+```
+
+```powershell
+docker compose logs --tail=40 assistente-service
+```
+
+Ao terminar, restaure no `.env` o provedor, modelo, URL e chave anotados antes do teste. Recrie o assistente para aplicar a configuração original:
+
+```powershell
+docker compose up -d --no-deps --force-recreate assistente-service
+```
+
+### Avaliação Comparativa das Cinco Perguntas
+
+O arquivo `services/assistente-service/avaliacao_mensagens.jsonl` registra a comparação entre LLM sem recuperação (`llm_pura`), RAG direto (`com_rag`) e agente com ferramentas (`com_agente`). A análise qualitativa considera aderência ao domínio, fundamentação nas fontes, completude e acionabilidade. A coluna de custo abaixo é uma estimativa recalculada a partir dos tokens informados, usando os preços cadastrados no projeto para `openai/gpt-oss-20b` (US$ 0,07 por milhão de tokens de entrada e US$ 0,30 por milhão de saída); ela não representa uma cobrança confirmada pelo provedor.
+
+| Pergunta | Modo | Fontes / tools | Latência registrada | Tokens (entrada / saída) | Custo estimado (USD) | Qualidade e fidelidade ao domínio |
+| --- | --- | --- | ---: | ---: | ---: | --- |
+| **P1: Promoção a mentor** | `llm_pura` | Nenhuma | 1.295,49 ms (total) | 17 / 511 | 0,00015449 | **Alucina** regras inexistentes (formulário, curso de 4 semanas, 2 h/mês e certificado). |
+| **P1: Promoção a mentor** | `com_rag` | `03_rede_apoio_mentoria.md` | 150,44 ms (RAG) | 17 / 364 | 0,00011039 | **Fiel:** menciona progresso/estabilidade, desejo de ajudar, avaliação psicológica e preparo. |
+| **P1: Promoção a mentor** | `com_agente` | `consultar_base_conhecimento` | 4.316,64 ms (total) | 17 / 554 | 0,00016739 | **Fiel e acionável:** mantém critérios e sugere próximos passos; latência maior. |
+| **P2: Impulso após perda** | `llm_pura` | Nenhuma | 1.466,20 ms (total) | 35 / 10 | 0,00000545 | **Recusa genérica/inadequada** para um pedido de orientação de autocontrole. |
+| **P2: Impulso após perda** | `com_rag` | `impacto-social-jogos-azar.pdf` | 26,04 ms (RAG) | 35 / 297 | 0,00009155 | **Fiel:** aborda “perseguir perdas” (p. 102) e medidas práticas de contenção. |
+| **P2: Impulso após perda** | `com_agente` | `consultar_base_conhecimento` | 4.734,77 ms (total) | 35 / 883 | 0,00026735 | **Completa:** une gatilho de perda, técnicas de pausa/TCC, apoio e aviso clínico. |
+| **P3: Mentor vs. psicólogo** | `llm_pura` | Nenhuma | 750,79 ms (total) | 23 / 275 | 0,00008411 | **Desviada:** trata mentor como foco profissional/carreira, fora da BEDARCE. |
+| **P3: Mentor vs. psicólogo** | `com_rag` | `01_plataforma_bedarce.md` | 22,35 ms (RAG) | 23 / 504 | 0,00015281 | **Fiel:** distingue apoio por experiência de pares de acompanhamento clínico. |
+| **P3: Mentor vs. psicólogo** | `com_agente` | `consultar_base_conhecimento` | 4.794,29 ms (total) | 23 / 613 | 0,00018551 | **Detalhada:** compara papéis, frequência, escopo e regulação com clareza. |
+| **P4: Pontos e trilhas** | `llm_pura` | Nenhuma | 948,91 ms (total) | 13 / 406 | 0,00012271 | **Genérica:** inventa exemplos de curso, matemática e bônus sem base na BEDARCE. |
+| **P4: Pontos e trilhas** | `com_rag` | `01_plataforma_bedarce.md` | 49,44 ms (RAG) | 13 / 34 | 0,00001111 | **Conservadora/omissa:** recupera trecho insuficiente e admite falta de informação. |
+| **P4: Pontos e trilhas** | `com_agente` | `consultar_perfil_e_trilha`, `consultar_base_conhecimento` | 14.556,93 ms (total) | 13 / 1.166 | 0,00035071 | **Abrangente, porém lenta:** usa duas tools e gera resposta longa. |
+| **P5: Gatilhos emocionais** | `llm_pura` | Nenhuma | 1.127,59 ms (total) | 26 / 283 | 0,00008672 | **Genérica:** enumera gatilhos sem ancoragem explícita nas fontes. |
+| **P5: Gatilhos emocionais** | `com_rag` | `impacto-social-jogos-azar.pdf` | 40,26 ms (RAG) | 26 / 98 | 0,00003122 | **Sub-recuperação:** o trecho obtido (p. 115) não cobre todos os gatilhos do corpus. |
+| **P5: Gatilhos emocionais** | `com_agente` | `consultar_base_conhecimento` | 4.255,09 ms (total) | 26 / 665 | 0,00020132 | **Fiel e estruturada:** mapeia euforia, escape, culpa, frustração e controle com fontes. |
+
+Os tempos de RAG na tabela medem a recuperação e não devem ser comparados diretamente com tempos totais de geração. Para medições de latência ponta a ponta, use `GET /v1/assistente/metricas`, que apresenta métricas agregadas das chamadas reais ao LLM, incluindo média, p50 e p95. A projeção de custo mensal considera o custo médio por operação e a taxa de cache observada; os valores variam com o modelo, o provedor, o volume de tokens e os preços vigentes.
+
+**Conclusões da avaliação:**
+
+* **Sem recuperação (`llm_pura`):** apresentou os menores tempos totais (750,79 ms a 1.466,20 ms), mas inventou regras nas perguntas P1 e P4, desviou do domínio em P3 e recusou indevidamente um pedido legítimo em P2.
+* **Com RAG direto (`com_rag`):** fundamentou melhor as respostas em documentos, mas a recuperação simples com `k=4` trouxe contexto parcial nas perguntas P4 e P5.
+* **Com agente (`com_agente`):** produziu respostas mais alinhadas e acionáveis e, na P4, consultou dados reais do sistema. Em contrapartida, teve tempos totais de 4,25 s a 14,56 s e maior volume de tokens de saída, reforçando a importância de monitorar latência, custo e cache.
 
 ---
 
