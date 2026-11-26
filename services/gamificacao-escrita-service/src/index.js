@@ -69,6 +69,39 @@ app.post('/v1/etapas/:id/conclusao', async (req, res) => {
   res.status(200).json(resultado);
 });
 
+// Etapa final da SAGA: libera a trilha exclusiva de formação de mentores.
+// A chave composta usuario_id + trilha_id torna a operação idempotente.
+app.post('/v1/internal/trilhas-mentor', async (req, res) => {
+  const { usuarioId } = req.body || {};
+  if (typeof usuarioId !== 'string' || !usuarioId.trim()) {
+    throw new ErroHttp(400, 'VALIDATION_ERROR', 'usuarioId é obrigatório.');
+  }
+  const { rows } = await pool.query(
+    `INSERT INTO inscricoes_trilhas (usuario_id, trilha_id)
+     SELECT $1, id FROM trilhas
+     WHERE id = 't-2' AND ativa = TRUE AND publico_alvo @> ARRAY['MENTOR']::TEXT[]
+     ON CONFLICT (usuario_id, trilha_id) DO NOTHING
+     RETURNING usuario_id, trilha_id, inscrito_em`,
+    [usuarioId],
+  );
+  if (rows[0]) return res.status(201).json({ ...rows[0], status: 'LIBERADA', novaInscricao: true });
+  const existente = await pool.query(
+    `SELECT usuario_id, trilha_id, inscrito_em FROM inscricoes_trilhas
+     WHERE usuario_id = $1 AND trilha_id = 't-2'`, [usuarioId],
+  );
+  if (!existente.rows[0]) throw new ErroHttp(409, 'TRILHA_INDISPONIVEL', 'A trilha de formação de mentores não está disponível.');
+  return res.status(200).json({ ...existente.rows[0], status: 'LIBERADA', novaInscricao: false });
+});
+
+app.get('/v1/internal/trilhas-mentor/:usuarioId', async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT i.usuario_id, i.trilha_id, t.nome AS trilha, i.inscrito_em
+     FROM inscricoes_trilhas i JOIN trilhas t ON t.id = i.trilha_id
+     WHERE i.usuario_id = $1 AND i.trilha_id = 't-2'`, [req.params.usuarioId],
+  );
+  res.status(200).json(rows[0] || { usuario_id: req.params.usuarioId, status: 'NAO_LIBERADA' });
+});
+
 // Comandos administrativos de conteúdo.
 app.post('/v1/trilhas', async (req, res) => {
   const trilha = await criarTrilha(req.body);

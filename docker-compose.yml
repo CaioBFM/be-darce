@@ -216,6 +216,14 @@ services:
     depends_on:
       gateway:
         condition: service_healthy
+      atendimento-service:
+        condition: service_healthy
+      usuarios-service:
+        condition: service_healthy
+      comunidade-service:
+        condition: service_healthy
+      gamificacao-escrita-service:
+        condition: service_healthy
     networks:
       - app-net
     healthcheck:
