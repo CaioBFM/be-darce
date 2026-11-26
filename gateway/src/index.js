@@ -42,16 +42,6 @@ const proxyError = (service) => (error, req, res) => {
 };
 
 app.use(
-  '/saga/v1',
-  createProxyMiddleware({
-    target: `http://saga-orquestrador:${process.env.PORT_SAGA || 5005}`,
-    changeOrigin: true,
-    pathRewrite: (path) => `/v1${path}`,
-    on: { error: proxyError('saga-orquestrador') },
-  }),
-);
-
-app.use(
   '/portal/v1',
   createProxyMiddleware({
     target: portalUrl,
@@ -91,6 +81,29 @@ const internalApp = express();
 internalApp.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', service: 'gateway-internal' });
 });
+
+async function encaminharSaga(req, res, { caminho, metodo }) {
+  const target = serviceTargets['saga-orquestrador'];
+  try {
+    const response = await fetch(`${target}${caminho}`, {
+      method: metodo,
+      ...(metodo === 'POST' ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req.body || {}) } : {}),
+      signal: AbortSignal.timeout(15000),
+    });
+    const body = await response.text();
+    const contentType = response.headers.get('content-type');
+    if (contentType) res.set('Content-Type', contentType);
+    return res.status(response.status).send(body);
+  } catch (error) {
+    const timeout = error.name === 'TimeoutError';
+    return res.status(timeout ? 504 : 502).json({ status: 'error', message: timeout ? 'Tempo limite excedido ao aguardar o orquestrador SAGA.' : 'Orquestrador SAGA indisponível.' });
+  }
+}
+
+internalApp.get('/v1/services/saga-orquestrador/demo/estado', (req, res) => encaminharSaga(req, res, { caminho: '/v1/demo/estado', metodo: 'GET' }));
+internalApp.get('/v1/services/saga-orquestrador/promocoes-mentor', (req, res) => encaminharSaga(req, res, { caminho: '/v1/promocoes-mentor', metodo: 'GET' }));
+internalApp.get('/v1/services/saga-orquestrador/promocoes-mentor/:id', (req, res) => encaminharSaga(req, res, { caminho: `/v1/promocoes-mentor/${encodeURIComponent(req.params.id)}`, metodo: 'GET' }));
+internalApp.post('/v1/services/saga-orquestrador/promocoes-mentor', express.json({ limit: '64kb' }), (req, res) => encaminharSaga(req, res, { caminho: '/v1/promocoes-mentor', metodo: 'POST' }));
 
 async function encaminharGamificacao(req, res, { servico, caminho, metodo }) {
   const target = serviceTargets[servico];
