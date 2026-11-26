@@ -22,3 +22,6 @@ pnpm-debug.log*
 *.py[cod]
 *$py.class
 *.egg-info/
+
+# Bancos vetoriais e dados locais
+**/chroma_db/
