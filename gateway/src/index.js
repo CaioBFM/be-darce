@@ -14,6 +14,7 @@ const serviceTargets = {
   'gamificacao-leitura': `http://gamificacao-leitura-service:${process.env.PORT_GAMIFICACAO_LEITURA || 5003}`,
   comunidade: `http://comunidade-service:${process.env.PORT_COMUNIDADE || 5004}`,
   'saga-orquestrador': `http://saga-orquestrador:${process.env.PORT_SAGA || 5005}`,
+  assistente: `http://assistente-service:${process.env.PORT_ASSISTENTE || 5006}`,
 };
 
 app.get('/', (req, res) => {
@@ -46,8 +47,8 @@ app.use(
   createProxyMiddleware({
     target: portalUrl,
     changeOrigin: true,
-    timeout: 15000,
-    proxyTimeout: 12000,
+    timeout: 125000,
+    proxyTimeout: 120000,
     pathRewrite: (path) => `/v1${path}`,
     on: { error: proxyError('bff-portal') },
   }),
@@ -104,6 +105,50 @@ internalApp.get('/v1/services/saga-orquestrador/demo/estado', (req, res) => enca
 internalApp.get('/v1/services/saga-orquestrador/promocoes-mentor', (req, res) => encaminharSaga(req, res, { caminho: '/v1/promocoes-mentor', metodo: 'GET' }));
 internalApp.get('/v1/services/saga-orquestrador/promocoes-mentor/:id', (req, res) => encaminharSaga(req, res, { caminho: `/v1/promocoes-mentor/${encodeURIComponent(req.params.id)}`, metodo: 'GET' }));
 internalApp.post('/v1/services/saga-orquestrador/promocoes-mentor', express.json({ limit: '64kb' }), (req, res) => encaminharSaga(req, res, { caminho: '/v1/promocoes-mentor', metodo: 'POST' }));
+
+async function encaminharAssistente(req, res, { caminho, metodo }) {
+  const target = serviceTargets.assistente;
+  const usuarioId = req.get('X-Usuario-Id');
+  try {
+    const response = await fetch(`${target}${caminho}`, {
+      method: metodo,
+      ...(usuarioId ? { headers: { 'X-Usuario-Id': usuarioId } } : {}),
+      ...(metodo === 'POST'
+        ? {
+            headers: {
+              'Content-Type': 'application/json',
+              ...(usuarioId ? { 'X-Usuario-Id': usuarioId } : {}),
+            },
+            body: JSON.stringify(req.body || {}),
+          }
+        : {}),
+      signal: AbortSignal.timeout(110000),
+    });
+    const body = await response.text();
+    const contentType = response.headers.get('content-type');
+    if (contentType) res.set('Content-Type', contentType);
+    return res.status(response.status).send(body);
+  } catch (error) {
+    const timeout = error.name === 'TimeoutError';
+    console.error('Falha no Gateway interno para assistente:', error.message);
+    return res.status(timeout ? 504 : 502).json({
+      status: 'error',
+      message: timeout
+        ? 'Tempo limite excedido ao aguardar assistente.'
+        : 'Não foi possível alcançar assistente pelo Gateway interno.',
+    });
+  }
+}
+
+internalApp.post('/v1/services/assistente/assistente/boas-vindas', express.json({ limit: '16kb' }), (req, res) => (
+  encaminharAssistente(req, res, { caminho: '/v1/assistente/boas-vindas', metodo: 'POST' })
+));
+internalApp.post('/v1/services/assistente/assistente/mensagem', express.json({ limit: '128kb' }), (req, res) => (
+  encaminharAssistente(req, res, { caminho: '/v1/assistente/mensagem', metodo: 'POST' })
+));
+internalApp.get('/v1/services/assistente/assistente/metricas', (req, res) => (
+  encaminharAssistente(req, res, { caminho: '/v1/assistente/metricas', metodo: 'GET' })
+));
 
 async function encaminharGamificacao(req, res, { servico, caminho, metodo }) {
   const target = serviceTargets[servico];
@@ -163,6 +208,25 @@ internalApp.get('/v1/services/gamificacao-leitura/trilhas/:id/etapas/:etapaId', 
   caminho: `/v1/trilhas/${encodeURIComponent(req.params.id)}/etapas/${encodeURIComponent(req.params.etapaId)}`,
   metodo: 'GET',
 }));
+
+// Rotas explícitas de leitura: os microsserviços continuam acessíveis somente pela rede interna.
+internalApp.get('/v1/services/usuarios/usuarios/:id', (req, res) => encaminharGamificacao(req, res, {
+  servico: 'usuarios',
+  caminho: `/v1/usuarios/${encodeURIComponent(req.params.id)}`,
+  metodo: 'GET',
+}));
+
+internalApp.get('/v1/services/comunidade/mentores', (req, res) => encaminharGamificacao(req, res, {
+  servico: 'comunidade',
+  caminho: '/v1/mentores',
+  metodo: 'GET',
+}));
+
+internalApp.get('/v1/services/assistente/assistente/historico', (req, res) => encaminharAssistente(
+  req,
+  res,
+  { caminho: '/v1/assistente/historico', metodo: 'GET' },
+));
 
 // Mantém o diagnóstico depois das rotas de produto para não interceptar consultas específicas.
 internalApp.get('/v1/services/:service/:operation', async (req, res) => {

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import './App.css'
+import Assistente from './Assistente.jsx'
 
 const services = [
   { key: 'usuarios', name: 'Usuários', database: 'PostgreSQL' },
@@ -8,6 +9,7 @@ const services = [
   { key: 'gamificacao-leitura', name: 'Gamificação — leitura', database: 'MongoDB' },
   { key: 'comunidade', name: 'Comunidade', database: 'MongoDB' },
   { key: 'saga-orquestrador', name: 'Orquestrador SAGA', database: 'PostgreSQL de Atendimento (compartilhado)' },
+  { key: 'assistente', name: 'Assistente virtual', database: 'PostgreSQL + pgvector' },
 ]
 
 const USER_ID = 'demo-portal-bed arce'.replace(' ', '')
@@ -159,6 +161,8 @@ function App() {
         <h1>Um passo de cada vez.</h1>
         <p className="intro">Acompanhe sua jornada, avance no seu ritmo e celebre cada conquista.</p>
       </section>
+
+      <Assistente usuarioId={USER_ID} />
 
       <section className="diagnostic-card gamification" aria-live="polite">
         <div className="card-heading"><div><p className="eyebrow">SUA JORNADA</p><h2>Gamificação</h2></div><span className="demo-user">Demonstração · {USER_ID}</span></div>

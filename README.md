@@ -779,6 +779,58 @@ docker compose down
 
 docker compose down preserva os volumes dos bancos.
 
+---
+
+## Integração de LLM
+
+### 1. Propósito no Domínio
+
+O `assistente-service` apoia usuários e familiares no contexto de transtorno do jogo e apostas online na BEDARCE: responde com base em materiais de referência, consulta dados operacionais (progresso/trilha e mentores) via Gateway interno (`8081`), registra métricas em PostgreSQL e inclui avisos de limitação sem substituir acompanhamento clínico.
+
+### 2. Pipeline RAG (`pgvector`) e LangChain
+
+* **Ingestão:** Segmentação dos documentos de `base_conhecimento/` (`.md` e `.pdf`) com metadados de fonte e *advisory lock* no PostgreSQL para evitar concorrência na inicialização.
+* **Embeddings:** Modelo `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` via `langchain-huggingface`, pré-carregado no *build* e executado em CPU no *runtime*.
+* **Armazenamento e Recuperação:** Vetores persistidos em PostgreSQL + `pgvector`, recuperados pela *tool* `consultar_base_conhecimento`.
+* **Composição e Agente:** Fluxo construído com LangChain/LangGraph, histórico persistido por usuário e seleção dinâmica de *tools* (`consultar_base_conhecimento`, consulta de perfil/trilha e consulta de mentores) quando a intenção exige busca documental, dados do sistema ou combinação de ambos.
+
+### 3. LLM como Serviço Distribuído, Latência e Custo
+
+* **Resiliência:** *Timeout* configurável, *retry* com *backoff* exponencial (`tenacity`), *circuit breaker*, cache por chave no PostgreSQL com TTL e *fallback* quando o provedor falha ou o circuito abre.
+* **Latência e Custo:** O `MetricasCallback` grava na tabela `metricas_execucoes` os tempos de RAG, *tools*, LLM e total, além de tokens de entrada/saída, custo estimado por operação e projeções mensais em escala.
+
+---
+
+## Análise Comparativa das 5 Perguntas (`avaliacao_mensagens.jsonl`)
+
+### Tabela Consolidada
+
+| Pergunta | Modo | Fontes / Tools | Latência / Tempo | Tokens (In / Out) | Qualidade e Fidelidade ao Domínio |
+| --- | --- | --- | --- | --- | --- |
+| **P1: Promoção a mentor** | `llm_pura` | Nenhuma | 1295,49 ms (total) | 17 / 511 | **Alucina** regras inexistentes (formulário, curso de 4 semanas, 2h/mês, certificado). |
+| **P1: Promoção a mentor** | `com_rag` | `03_rede_apoio_mentoria.md` | 150,44 ms (RAG) | 17 / 364 | **Fiel:** progresso/estabilidade, desejo de ajudar, avaliação psicológica e preparo. |
+| **P1: Promoção a mentor** | `com_agente` | `consultar_base_conhecimento` | 4316,64 ms (total) | 17 / 554 | **Fiel e acionável:** mantém critérios e sugere próximos passos; latência maior. |
+| **P2: Impulso após perda** | `llm_pura` | Nenhuma | 1466,20 ms (total) | 35 / 10 | **Recusa genérica/inadequada** para pedido de orientação de autocontrole. |
+| **P2: Impulso após perda** | `com_rag` | `impacto-social-jogos-azar.pdf` | 26,04 ms (RAG) | 35 / 297 | **Fiel:** aborda "perseguir perdas" (p. 102) e medidas práticas de contenção. |
+| **P2: Impulso após perda** | `com_agente` | `consultar_base_conhecimento` | 4734,77 ms (total) | 35 / 883 | **Completa:** une gatilho de perda, técnicas de pausa/TCC, apoio e aviso clínico. |
+| **P3: Mentor vs. Psicólogo** | `llm_pura` | Nenhuma | 750,79 ms (total) | 23 / 275 | **Desviada:** trata mentor como foco profissional/carreira, fora da BEDARCE. |
+| **P3: Mentor vs. Psicólogo** | `com_rag` | `01_plataforma_bedarce.md` | 22,35 ms (RAG) | 23 / 504 | **Fiel:** distingue apoio por experiência de pares vs. acompanhamento clínico. |
+| **P3: Mentor vs. Psicólogo** | `com_agente` | `consultar_base_conhecimento` | 4794,29 ms (total) | 23 / 613 | **Detalhada:** compara papéis, frequência, escopo e regulação com clareza. |
+| **P4: Pontos e trilhas** | `llm_pura` | Nenhuma | 948,91 ms (total) | 13 / 406 | **Genérica:** inventa exemplos de curso/matemática/bônus sem base na BEDARCE. |
+| **P4: Pontos e trilhas** | `com_rag` | `01_plataforma_bedarce.md` | 49,44 ms (RAG) | 13 / 34 | **Conservadora/omissa:** recupera trecho insuficiente e admite falta de informação. |
+| **P4: Pontos e trilhas** | `com_agente` | `consultar_perfil_e_trilha`, `consultar_base_conhecimento` | 14556,93 ms (total) | 13 / 1166 | **Abrangente porém lenta:** usa 2 *tools* e gera resposta longa (1166 tokens de saída). |
+| **P5: Gatilhos emocionais** | `llm_pura` | Nenhuma | 1127,59 ms (total) | 26 / 283 | **Genérica:** enumera gatilhos comuns sem ancoragem explícita nas fontes da base. |
+| **P5: Gatilhos emocionais** | `com_rag` | `impacto-social-jogos-azar.pdf` | 40,26 ms (RAG) | 26 / 98 | **Sub-recuperação:** o trecho obtido (p. 115) não cobre todos os gatilhos do corpus. |
+| **P5: Gatilhos emocionais** | `com_agente` | `consultar_base_conhecimento` | 4255,09 ms (total) | 26 / 665 | **Fiel e estruturada:** mapeia euforia, escape, culpa, frustração e controle com fontes. |
+
+### Conclusão da Avaliação
+
+* **Sem recuperação (`llm_pura`):** É a mais rápida (750 ms a 1466 ms), mas apresenta **alucinação de regras**, **desvio de domínio** ou **recusa fora de contexto**.
+* **Com recuperação direta (`com_rag`):** Reduz drasticamente invenções ao ancorar nos documentos, mantendo a recuperação em dezenas/centenas de milissegundos, mas pode sofrer com **recuperação parcial** quando a consulta exige múltiplas seções.
+* **Com agente (`com_agente`):** Entrega as respostas mais alinhadas ao domínio e orientadas à ação, inclusive acionando *tools* do sistema, mas eleva a latência (4,25 s a 14,56 s) e o volume de tokens de saída (554 a 1166 tokens), exigindo cache e *timeouts* bem ajustados.
+
+---
+
 ## Demonstração em Vídeo
 
 Vídeo de explicação do sistema conteinerizado: [Conteinerização do BEDARCE](https://drive.google.com/file/d/16lQ_KlTs5xKqNrb4UfjgE6A5zmd9tXKJ/view?usp=sharing).
