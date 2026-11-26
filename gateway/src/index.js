@@ -68,6 +68,18 @@ app.use(
   }),
 );
 
+app.use(
+  '/usuarios/v1',
+  createProxyMiddleware({
+    target: serviceTargets.usuarios,
+    changeOrigin: true,
+    pathRewrite: (path) => `/v1${path}`,
+    on: { error: proxyError('usuarios-service') },
+  }),
+);
+
+
+
 // Listener interno: os BFFs usam esta porta para alcançar serviços pelo Gateway.
 const internalApp = express();
 

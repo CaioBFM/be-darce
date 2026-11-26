@@ -107,4 +107,32 @@ app.post('/v1/promocoes-mentor',async(req,res)=>{
 app.get('/v1/promocoes-mentor/:id',async(req,res)=>{try{res.json(await request(`${urls.atendimento}/internal/promocoes/${req.params.id}`));}catch(e){res.status(e.status||502).json({error:e.message});}});
 app.get('/v1/promocoes-mentor',async(req,res)=>{try{res.json(await request(`${urls.atendimento}/v1/promocoes-mentor`));}catch(e){res.status(502).json({error:e.message});}});
 app.get('/v1/demo/estado',async(req,res)=>{try{const [usuarios,mentores,pacientes,promocoes]=await Promise.all([request(`${urls.usuarios}/v1/usuarios`),request(`${urls.comunidade}/v1/mentores`),request(`${urls.atendimento}/v1/pacientes`),request(`${urls.atendimento}/v1/promocoes-mentor`)]);const trilhasMentor=await Promise.all(usuarios.map(u=>request(`${urls.gamificacao}/v1/internal/trilhas-mentor/${u.id}`)));res.json({pacientes,usuarios,mentores,trilhasMentor,promocoes});}catch(e){res.status(502).json({error:e.message,message:'Não foi possível consultar todos os serviços.'});}});
+
+app.get('/v1/mentores', async (req, res) => {
+  try {
+    const mentores = await request(`${urls.comunidade}/v1/mentores`);
+    res.json(mentores);
+  } catch (e) {
+    res.status(e.status || 502).json({
+      error: e.message,
+      service: 'saga-orquestrador',
+    });
+  }
+});
+
+app.get('/v1/trilhas-mentor', async (req, res) => {
+  try {
+    const usuarios = await request(`${urls.usuarios}/v1/usuarios`);
+    const trilhasMentor = await Promise.all(
+      usuarios.map((u) => request(`${urls.gamificacao}/v1/internal/trilhas-mentor/${u.id}`)),
+    );
+    res.json(trilhasMentor);
+  } catch (e) {
+    res.status(e.status || 502).json({
+      error: e.message,
+      service: 'saga-orquestrador',
+    });
+  }
+});
+
 app.listen(port,'0.0.0.0',()=>console.log(`Orquestrador SAGA ouvindo na porta ${port}`));
