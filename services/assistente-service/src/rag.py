@@ -5,6 +5,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from src.ingestao import garantir_base_vetorial
 from src.llm_factory import criar_modelo_llm
+from src.metricas import MetricasCallback
 
 
 # Cria e retorna o retriever configurado para buscar os k trechos mais relevantes no ChromaDB
@@ -81,6 +82,7 @@ def construir_rag_chain(k: int = 4):
 
 # Executa uma consulta RAG completa retornando resposta, fontes utilizadas e tempo de recuperação em ms
 def consultar_rag_com_fontes(pergunta: str, k: int = 4) -> dict:
+    inicio_total = time.perf_counter()
     retriever = obter_retriever(k=k)
 
     # Mede o tempo gasto apenas na etapa de recuperação vetorial (embedding da query + busca no ChromaDB)
@@ -95,12 +97,19 @@ def consultar_rag_com_fontes(pergunta: str, k: int = 4) -> dict:
     # Executa o restante da chain (prompt -> LLM -> parser) com o contexto já recuperado
     prompt_rag = _criar_prompt_rag()
     llm = criar_modelo_llm()
+    metricas = MetricasCallback()
     chain_geracao = prompt_rag | llm | StrOutputParser()
-    resposta = chain_geracao.invoke({"contexto": contexto_formatado, "pergunta": pergunta})
+    resposta = chain_geracao.invoke(
+        {"contexto": contexto_formatado, "pergunta": pergunta},
+        config={"callbacks": [metricas]},
+    )
 
     return {
         "resposta": resposta,
         "fontes": fontes,
         "chunks_recuperados": len(docs_recuperados),
         "latencia_rag_ms": round(latencia_busca_ms, 2),
+        "latencia_total_ms": round((time.perf_counter() - inicio_total) * 1000, 2),
+        "usage_metadata": metricas.usage_metadata,
+        "texto_entrada_estimativa": f"{contexto_formatado}\n\n{pergunta}",
     }

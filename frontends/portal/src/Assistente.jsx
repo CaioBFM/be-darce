@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import styles from './Assistente.module.css'
 
 const BOAS_VINDAS_PADRAO =
@@ -8,6 +10,7 @@ export default function Assistente({ usuarioId }) {
   const [mensagens, setMensagens] = useState([])
   const [texto, setTexto] = useState('')
   const [enviando, setEnviando] = useState(false)
+  const [carregandoHistorico, setCarregandoHistorico] = useState(true)
   const fim = useRef(null)
   const headers = useMemo(
     () => ({ 'X-Usuario-Id': usuarioId, 'Content-Type': 'application/json' }),
@@ -16,14 +19,29 @@ export default function Assistente({ usuarioId }) {
 
   useEffect(() => {
     let cancelado = false
+    setMensagens([])
+    setCarregandoHistorico(true)
     ;(async () => {
       try {
-        const response = await fetch('/portal/v1/assistente/boas-vindas', { method: 'POST', headers, body: '{}' })
+        const response = await fetch('/portal/v1/assistente/historico', { headers })
         const body = await response.json()
         if (!response.ok) throw new Error(body.message)
-        if (!cancelado) setMensagens([{ papel: 'assistente', texto: body.mensagem }])
+
+        if (body.mensagens?.length) {
+          if (!cancelado) setMensagens(body.mensagens)
+          return
+        }
+
+        const boasVindas = await fetch('/portal/v1/assistente/boas-vindas', {
+          method: 'POST', headers, body: '{}',
+        })
+        const saudacao = await boasVindas.json()
+        if (!boasVindas.ok) throw new Error(saudacao.message)
+        if (!cancelado) setMensagens([{ papel: 'assistente', texto: saudacao.mensagem }])
       } catch {
         if (!cancelado) setMensagens([{ papel: 'assistente', texto: BOAS_VINDAS_PADRAO }])
+      } finally {
+        if (!cancelado) setCarregandoHistorico(false)
       }
     })()
     return () => { cancelado = true }
@@ -69,7 +87,11 @@ export default function Assistente({ usuarioId }) {
             key={i}
             className={`${styles.chatMsg} ${styles[`chat${m.papel[0].toUpperCase()}${m.papel.slice(1)}`]}${m.erro ? ` ${styles.chatErro}` : ''}`}
           >
-            <p>{m.texto}</p>
+            {m.papel === 'assistente' ? (
+              <div className={styles.markdown}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml>{m.texto}</ReactMarkdown>
+              </div>
+            ) : <p>{m.texto}</p>}
             {m.contingencia && <small className={styles.chatTag}>Modo de contingência: IA temporariamente indisponível</small>}
             {m.fontes?.length > 0 && <small className={styles.chatFontes}>Fontes: {m.fontes.join(', ')}</small>}
           </div>
@@ -80,9 +102,9 @@ export default function Assistente({ usuarioId }) {
       <form className={styles.chatForm} onSubmit={enviar}>
         <input
           value={texto} onChange={(e) => setTexto(e.target.value)} maxLength={1000}
-          placeholder="Escreva sua mensagem…" disabled={enviando} aria-label="Mensagem para o assistente"
+          placeholder="Escreva sua mensagem…" disabled={enviando || carregandoHistorico} aria-label="Mensagem para o assistente"
         />
-        <button type="submit" disabled={enviando || !texto.trim()}>Enviar</button>
+        <button type="submit" disabled={enviando || carregandoHistorico || !texto.trim()}>Enviar</button>
       </form>
     </section>
   )

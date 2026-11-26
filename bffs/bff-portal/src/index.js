@@ -50,8 +50,11 @@ async function encaminharGamificacao(req, res, { servico, caminho, metodo }) {
 
 async function encaminharAssistente(req, res, caminho) {
   const usuarioId = req.get('X-Usuario-Id');
+  if (!usuarioId) {
+    return res.status(400).json({ status: 'error', message: 'Identificação do usuário obrigatória.' });
+  }
   const payload = { ...(req.body || {}) };
-  if (usuarioId && !payload.usuario_id) payload.usuario_id = usuarioId;
+  payload.usuario_id = usuarioId;
 
   try {
     const response = await fetch(
@@ -81,6 +84,30 @@ async function encaminharAssistente(req, res, caminho) {
     });
   }
 }
+
+app.get('/v1/assistente/historico', async (req, res) => {
+  const usuarioId = req.get('X-Usuario-Id');
+  if (!usuarioId) {
+    return res.status(400).json({ status: 'error', message: 'Identificação do usuário obrigatória.' });
+  }
+
+  try {
+    const response = await fetch(
+      `${internalGatewayUrl}/v1/services/assistente/assistente/historico`,
+      {
+        headers: { 'X-Usuario-Id': usuarioId },
+        signal: AbortSignal.timeout(10000),
+      },
+    );
+    const body = await response.text();
+    const contentType = response.headers.get('content-type');
+    if (contentType) res.set('Content-Type', contentType);
+    return res.status(response.status).send(body);
+  } catch (error) {
+    console.error('Falha ao recuperar histórico do assistente:', error.message);
+    return res.status(502).json({ status: 'error', message: 'Não foi possível recuperar o histórico.' });
+  }
+});
 
 app.post('/v1/assistente/boas-vindas', (req, res) => (
   encaminharAssistente(req, res, '/assistente/boas-vindas')

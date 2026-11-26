@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     cache_ttl_segundos: float = 600.0
 
     llm_provider: str = "groq"
-    llm_model: str = "llama-3.3-70b-versatile"
+    llm_model: str = "openai/gpt-oss-20b"
     llm_temperature: float = 0.2
     llm_timeout_seconds: float = 15.0
 

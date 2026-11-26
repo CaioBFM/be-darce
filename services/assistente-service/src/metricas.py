@@ -11,7 +11,8 @@ from src.db import get_pool
 _PRECOS_POR_MILHAO: dict[str, tuple[float, float]] = {
     "referencia_padrao": (0.15, 0.60),
     "groq_default": (0.05, 0.08),
-    "openai/gpt-oss-20b": (0.07, 0.30),
+    # Groq GPT-OSS 20B: US$ 0.075/M entrada e US$ 0.30/M saída.
+    "openai/gpt-oss-20b": (0.075, 0.30),
     "llama-3.3-70b-versatile": (0.59, 0.79),
 }
 
@@ -52,7 +53,7 @@ def estimar_tokens_e_custo(
     }
 
 
-# Callback LangChain: mede tempo REAL das tools/RAG e tokens REAIS reportados pelo provedor
+# Callback LangChain: soma o uso informado pelo provedor ou estima cada chamada pelo prompt efetivo.
 class MetricasCallback(BaseCallbackHandler):
     def __init__(self) -> None:
         self._lock = Lock()
@@ -61,6 +62,32 @@ class MetricasCallback(BaseCallbackHandler):
         self.latencia_rag_ms = 0.0
         self.tokens_entrada = 0
         self.tokens_saida = 0
+        self._prompts_por_execucao: dict = {}
+
+    @staticmethod
+    def _texto_mensagem(mensagem) -> str:
+        conteudo = getattr(mensagem, "content", "")
+        if isinstance(conteudo, str):
+            return conteudo
+        if isinstance(conteudo, list):
+            return " ".join(
+                bloco.get("text", "") for bloco in conteudo
+                if isinstance(bloco, dict) and isinstance(bloco.get("text"), str)
+            )
+        return str(conteudo or "")
+
+    def on_chat_model_start(self, serialized, messages, *, run_id, **kwargs):
+        texto_prompt = "\n".join(
+            self._texto_mensagem(mensagem)
+            for conversa in messages
+            for mensagem in conversa
+        )
+        with self._lock:
+            self._prompts_por_execucao[run_id] = texto_prompt
+
+    def on_llm_start(self, serialized, prompts, *, run_id, **kwargs):
+        with self._lock:
+            self._prompts_por_execucao[run_id] = "\n".join(prompts)
 
     def on_tool_start(self, serialized, input_str, *, run_id, **kwargs):
         nome = (serialized or {}).get("name") or kwargs.get("name") or ""
@@ -83,14 +110,36 @@ class MetricasCallback(BaseCallbackHandler):
     def on_tool_error(self, error, *, run_id, **kwargs):
         self._finalizar_tool(run_id)
 
-    def on_llm_end(self, response, **kwargs):
+    def on_llm_end(self, response, *, run_id, **kwargs):
+        prompt = self._prompts_por_execucao.pop(run_id, "")
+        uso_entrada = 0
+        uso_saida = 0
+        texto_saida = ""
         with self._lock:
             for geracoes in response.generations:
                 for geracao in geracoes:
-                    uso = getattr(getattr(geracao, "message", None), "usage_metadata", None)
+                    mensagem = getattr(geracao, "message", None)
+                    uso = getattr(mensagem, "usage_metadata", None)
                     if uso:
-                        self.tokens_entrada += int(uso.get("input_tokens", 0))
-                        self.tokens_saida += int(uso.get("output_tokens", 0))
+                        uso_entrada += int(uso.get("input_tokens", 0))
+                        uso_saida += int(uso.get("output_tokens", 0))
+                    texto_saida += self._texto_mensagem(mensagem) if mensagem else ""
+
+            # Algumas integrações LangChain expõem o uso no LLMResult, não na mensagem.
+            uso_resultado = (getattr(response, "llm_output", None) or {}).get("token_usage", {})
+            if not uso_entrada:
+                uso_entrada = int(uso_resultado.get("prompt_tokens", 0))
+            if not uso_saida:
+                uso_saida = int(uso_resultado.get("completion_tokens", 0))
+
+            # Cada chamada do agente é contabilizada; quando o provedor não envia uso,
+            # estima-se a entrada do prompt efetivo (histórico e resultados das tools incluídos).
+            self.tokens_entrada += uso_entrada or (max(1, len(prompt) // 4) if prompt.strip() else 0)
+            self.tokens_saida += uso_saida or (max(1, len(texto_saida) // 4) if texto_saida.strip() else 0)
+
+    def on_llm_error(self, error, *, run_id, **kwargs):
+        with self._lock:
+            self._prompts_por_execucao.pop(run_id, None)
 
     @property
     def usage_metadata(self) -> dict:

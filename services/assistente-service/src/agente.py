@@ -76,6 +76,23 @@ def obter_historico_recente(usuario_id: str | None, max_interacoes: int = _MAX_T
     return [AIMessage(content=c) if p == "assistant" else HumanMessage(content=c) for p, c in linhas]
 
 
+def obter_historico_persistido(usuario_id: str, limite: int = _MAX_MENSAGENS_ARMAZENADAS) -> list[dict]:
+    """Retorna somente mensagens da identidade solicitada, em ordem cronológica."""
+    chave = _chave_historico(usuario_id)
+    with get_pool().connection() as conn:
+        linhas = conn.execute(
+            """SELECT papel, conteudo FROM (
+                   SELECT id, papel, conteudo FROM historico_conversas
+                   WHERE usuario_id = %s ORDER BY id DESC LIMIT %s
+               ) t ORDER BY id ASC""",
+            (chave, limite),
+        ).fetchall()
+    return [
+        {"papel": "assistente" if papel == "assistant" else "usuario", "texto": conteudo}
+        for papel, conteudo in linhas
+    ]
+
+
 def registrar_interacao_historico(usuario_id: str | None, pergunta_usuario: str, resposta_assistente: str) -> None:
     chave = _chave_historico(usuario_id)
     try:
