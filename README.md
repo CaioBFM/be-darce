@@ -14,6 +14,7 @@
 - [Padrões arquiteturais](#padrão-database-per-service-outbox-e-relay)
   - [CQRS](#cqrs-no-microsserviço-de-gamificação)
   - [SAGA](#saga-de-evolução-de-paciente-para-mentor)
+- [Contribuições na Parte 4](#contribuições-na-parte-4)
 - [Contratos das APIs](#api-rest-e-contratos-dos-microsserviços)
 - [Estrutura do projeto](#estrutura-de-pastas)
 - [Containerização e orquestração](#conteinerização-com-docker-compose)
@@ -256,8 +257,7 @@ O Gateway é a única porta de entrada do sistema para requisições externas. E
 
 **Responsabilidades:**
 - **Roteamento:** direciona cada chamada ao BFF correspondente.
-- **Autenticação:** valida o token antes de repassar a requisição.
-- **Rate limiting:** limita o volume de requisições e responde `429` ao exceder, protegendo contra abusos e sobrecarga.
+- **Planejado:** validação de token e limitação de requisições no Gateway. As integrações de demonstração usam `X-Usuario-Id` quando precisam identificar o usuário.
 - **Isolamento:** mantém a estrutura interna oculta; o cliente só conhece o gateway.
 
 ---
@@ -778,6 +778,23 @@ docker compose down
 `docker compose down` encerra os containers, mas preserva os volumes nomeados dos bancos.
 
 docker compose down preserva os volumes dos bancos.
+
+---
+
+## Contribuições na Parte 4
+
+### Caio Bueno Finocchio Martins
+
+- **Gateway e frontends:** o Portal usa `/portal/v1` via `bff-portal` e o Painel Administrativo usa `/admin/v1` via `bff-admin`. Os BFFs encaminham as chamadas aos serviços pelo Gateway interno.
+- **Gamificação no Portal:** exibe trilhas, etapas, questionários, pontos e nível. Após confirmar a conclusão, consulta o progresso até a projeção refletir a nova versão e atualiza a lista de etapas. Se a sincronização demorar além das tentativas, informa que a conclusão foi registrada.
+- **SAGA no Painel Administrativo:** a interface de demonstração solicita a promoção, permite simular a rejeição em Comunidade e consulta o estado e os passos da execução pelo orquestrador. Os cenários de sucesso e compensação estão no [roteiro da SAGA](docs/SAGA-DEMO.md).
+- **Correções do assistente virtual:** habilitou as consultas de perfil e mentores pelo Gateway interno, a recuperação do histórico no Portal e a renderização de Markdown sem HTML bruto. Ajustou o retry para respeitar `Retry-After` em respostas `429` do provedor, a contabilização de tokens e custos e a tolerância do healthcheck durante a ingestão inicial.
+- **Validação do RAG:** duas rodadas com cinco perguntas compararam respostas sem recuperação e com recuperação de até [1 trecho](docs/avaliacao-rag/k1.jsonl) ou [4 trechos](docs/avaliacao-rag/k4.jsonl). Os registros incluem respostas, fontes recuperadas, latência, tokens e custo estimado. São rodadas distintas da análise com agente apresentada abaixo.
+
+### Diego Alves de Oliveira
+
+- **CQRS da Gamificação:** implementou o modelo de escrita em PostgreSQL, a Outbox na mesma transação da conclusão e o Relay HTTP que atualiza a projeção de leitura em MongoDB. A projeção usa o identificador do evento e a versão do agregado para tratar reenvios e descartar estados antigos.
+- **Integração e testes:** o Portal usa a escrita para concluir etapas e a leitura para consultar trilhas e progresso. A demonstração nos serviços registrou sincronização entre 0,3 s e 1,1 s, além de testes de reenvio, versões antigas, conclusões simultâneas e operação com duas réplicas de escrita. Os resultados e o fluxo pelo Portal estão em [`docs/CQRS.md`](docs/CQRS.md).
 
 ---
 

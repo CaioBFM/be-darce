@@ -62,7 +62,7 @@ Regras da conclusão, todas dentro de uma única transação:
 - a linha de `pontuacoes` do usuário é travada com `FOR UPDATE`, o que serializa conclusões simultâneas do mesmo usuário;
 - nível = `1 + floor(pontos / 50)`.
 
-> **Identidade do usuário:** ainda não há autenticação no sistema. Os serviços leem o usuário do cabeçalho `X-Usuario-Id`, que o Gateway/BFF deve preencher depois de validar o token.
+> **Identidade do usuário:** o Portal usa um identificador de demonstração no cabeçalho `X-Usuario-Id`, repassado pelo Gateway e pelo BFF. A obtenção desse identificador a partir de um token autenticado é planejada.
 
 ### Outbox e Relay (`src/relay.js`)
 
@@ -208,11 +208,6 @@ Resultado observado: com a leitura parada, a conclusão respondeu `200` e o even
 | 5 conclusões simultâneas da mesma etapa | Uma `200` e quatro `409` |
 | 2 réplicas da escrita (`--scale gamificacao-escrita-service=2`) com 40 conclusões | As réplicas dividiram as entregas (31/9), 40 eventos e 40 projeções, nenhum reenvio, defasagem máxima de 1,07 s |
 
-## Pontos de integração
-
-- **Gateway e BFFs:** expor os comandos pela escrita e as consultas pela leitura, preenchendo `X-Usuario-Id` com o usuário autenticado. As rotas `/v1/internal/*` não devem ser expostas.
-- **SAGA (passo 4):** a liberação da trilha exclusiva de mentores (`t-2`, público `MENTOR`) pode ser um novo comando no serviço de escrita, seguindo o mesmo padrão: grava a alteração e o evento na mesma transação, e o Relay propaga para a leitura.
-
 ## Integração pelo Gateway e BFF Portal
 
 O Portal encaminha as requisições pela porta pública do Gateway (`GATEWAY_HOST_PORT`, por padrão `8080`), mantendo o fluxo Gateway → BFF Portal → Gateway interno → microsserviço. O identificador de usuário abaixo é provisório para testes; a autenticação ainda não está implementada.
@@ -221,6 +216,12 @@ O Portal encaminha as requisições pela porta pública do Gateway (`GATEWAY_HOS
 | --- | --- | --- |
 | POST | `/portal/v1/gamificacao/etapas/{id}/conclusao` | Escrita: `/v1/etapas/{id}/conclusao` |
 | GET | `/portal/v1/gamificacao/progresso` | Leitura: `/v1/usuarios/me/progresso` |
+| GET | `/portal/v1/gamificacao/trilhas` | Leitura: `/v1/trilhas` |
+| GET | `/portal/v1/gamificacao/trilhas/{id}/etapas/{etapaId}` | Leitura: `/v1/trilhas/{id}/etapas/{etapaId}` |
+
+Na interface, a conclusão exibe os pontos ganhos retornados pela escrita. O Portal consulta o progresso a cada 500 ms, por até dez tentativas, e atualiza pontos, nível e trilhas quando a versão da projeção e o total de etapas concluídas avançam. Os resultados de defasagem acima foram medidos nos serviços de gamificação.
+
+Na SAGA, o orquestrador chama o serviço de escrita para inscrever o mentor na trilha `t-2`. A inscrição é idempotente e fica no PostgreSQL. Esse comando não publica um evento para a projeção no MongoDB.
 
 Exemplos para configurar no Insomnia (ajuste a porta pública conforme o `.env`):
 
