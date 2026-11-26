@@ -59,6 +59,16 @@ app.get('/v1/gamificacao/progresso', (req, res) => encaminharGamificacao(req, re
   metodo: 'GET',
 }));
 
+app.get('/v1/gamificacao/trilhas', (req, res) => encaminharGamificacao(req, res, {
+  servico: 'gamificacao-leitura', caminho: '/trilhas', metodo: 'GET',
+}));
+
+app.get('/v1/gamificacao/trilhas/:id/etapas/:etapaId', (req, res) => encaminharGamificacao(req, res, {
+  servico: 'gamificacao-leitura',
+  caminho: `/trilhas/${encodeURIComponent(req.params.id)}/etapas/${encodeURIComponent(req.params.etapaId)}`,
+  metodo: 'GET',
+}));
+
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', service: 'bff-portal' });
 });

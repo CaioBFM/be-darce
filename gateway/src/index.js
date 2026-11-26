@@ -145,6 +145,16 @@ internalApp.get('/v1/services/gamificacao-leitura/usuarios/me/progresso', (req, 
   });
 });
 
+internalApp.get('/v1/services/gamificacao-leitura/trilhas', (req, res) => encaminharGamificacao(req, res, {
+  servico: 'gamificacao-leitura', caminho: '/v1/trilhas', metodo: 'GET',
+}));
+
+internalApp.get('/v1/services/gamificacao-leitura/trilhas/:id/etapas/:etapaId', (req, res) => encaminharGamificacao(req, res, {
+  servico: 'gamificacao-leitura',
+  caminho: `/v1/trilhas/${encodeURIComponent(req.params.id)}/etapas/${encodeURIComponent(req.params.etapaId)}`,
+  metodo: 'GET',
+}));
+
 app.listen(port, '0.0.0.0', () => {
   console.log(`Gateway ouvindo na porta ${port}`);
 });
