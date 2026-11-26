@@ -14,6 +14,7 @@ const diagnosticServices = [
   'gamificacao-leitura',
   'comunidade',
   'saga-orquestrador',
+  'assistente',
 ];
 
 async function encaminharGamificacao(req, res, { servico, caminho, metodo }) {
@@ -46,6 +47,48 @@ async function encaminharGamificacao(req, res, { servico, caminho, metodo }) {
     });
   }
 }
+
+async function encaminharAssistente(req, res, caminho) {
+  const usuarioId = req.get('X-Usuario-Id');
+  const payload = { ...(req.body || {}) };
+  if (usuarioId && !payload.usuario_id) payload.usuario_id = usuarioId;
+
+  try {
+    const response = await fetch(
+      `${internalGatewayUrl}/v1/services/assistente${caminho}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(usuarioId ? { 'X-Usuario-Id': usuarioId } : {}),
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(115000),
+      },
+    );
+    const body = await response.text();
+    const contentType = response.headers.get('content-type');
+    if (contentType) res.set('Content-Type', contentType);
+    return res.status(response.status).send(body);
+  } catch (error) {
+    const timeout = error.name === 'TimeoutError';
+    console.error('Falha na chamada interna para assistente:', error.message);
+    return res.status(timeout ? 504 : 502).json({
+      status: 'error',
+      message: timeout
+        ? 'Tempo limite excedido ao aguardar o assistente.'
+        : 'Serviço assistente indisponível.',
+    });
+  }
+}
+
+app.post('/v1/assistente/boas-vindas', (req, res) => (
+  encaminharAssistente(req, res, '/assistente/boas-vindas')
+));
+
+app.post('/v1/assistente/mensagem', (req, res) => (
+  encaminharAssistente(req, res, '/assistente/mensagem')
+));
 
 app.post('/v1/gamificacao/etapas/:id/conclusao', (req, res) => encaminharGamificacao(req, res, {
   servico: 'gamificacao-escrita',
