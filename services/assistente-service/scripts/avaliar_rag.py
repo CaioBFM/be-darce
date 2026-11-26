@@ -18,7 +18,7 @@ PERGUNTAS_AVALIACAO = [
     "Quais impactos sociais das apostas online são descritos nos materiais da base?",
 ]
 
-_TOP_K_AVALIACAO = 1
+_TOP_K_AVALIACAO = 4
 _ARQUIVO_SAIDA = Path(__file__).resolve().parent.parent / "avaliacao_mensagens.jsonl"
 
 
