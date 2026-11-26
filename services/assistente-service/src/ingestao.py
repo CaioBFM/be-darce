@@ -1,16 +1,24 @@
 import argparse
+from functools import lru_cache
 from pathlib import Path
-from langchain_chroma import Chroma
-from langchain_community.document_loaders import PyPDFLoader
+from threading import Lock
+
 from langchain_core.documents import Document
+from langchain_community.document_loaders import PyPDFLoader
 from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_postgres import PGVector
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+
 from src.config import settings
+from src.db import LOCK_INGESTAO, advisory_lock, get_pool, inicializar_schema, obter_engine
+
+_estado: dict = {"vectorstore": None}
+_lock = Lock()
 
 
-# Instancia o modelo local de embeddings multilíngue para gerar vetores sem custo de API
+# Modelo local de embeddings multilíngue (carregado uma única vez por processo)
+@lru_cache(maxsize=1)
 def obter_embeddings() -> HuggingFaceEmbeddings:
-    # Configura o modelo HuggingFace para rodar na CPU de forma compatível com português
     return HuggingFaceEmbeddings(
         model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
         model_kwargs={"device": "cpu"},
@@ -18,9 +26,7 @@ def obter_embeddings() -> HuggingFaceEmbeddings:
     )
 
 
-# Extrai o primeiro título Markdown de um texto para enriquecer os metadados do chunk
 def _extrair_titulo_markdown(texto: str, padrao: str) -> str:
-    # Percorre as linhas procurando o primeiro cabeçalho iniciado com '#'
     for linha in texto.splitlines():
         linha_limpa = linha.strip()
         if linha_limpa.startswith("#"):
@@ -28,22 +34,16 @@ def _extrair_titulo_markdown(texto: str, padrao: str) -> str:
     return padrao
 
 
-# Carrega todos os arquivos .md e .pdf da pasta base de conhecimento com seus metadados
 def carregar_documentos_base(diretorio_base: str | None = None) -> list[Document]:
     base_path = Path(diretorio_base or settings.base_conhecimento_dir)
     documentos: list[Document] = []
-
-    # Retorna lista vazia se o diretório de base ainda não existir
     if not base_path.exists():
         return documentos
 
-    # Varre recursivamente todos os arquivos .md (incluindo subpastas como mds/)
     for caminho_md in sorted(base_path.rglob("*.md")):
         conteudo = caminho_md.read_text(encoding="utf-8").strip()
         if not conteudo:
             continue
-        titulo = _extrair_titulo_markdown(conteudo, caminho_md.stem)
-        # Cria o documento LangChain anexando nome do arquivo, tipo e título
         documentos.append(
             Document(
                 page_content=conteudo,
@@ -51,22 +51,17 @@ def carregar_documentos_base(diretorio_base: str | None = None) -> list[Document
                     "fonte": caminho_md.name,
                     "caminho": str(caminho_md),
                     "tipo": "markdown",
-                    "titulo": titulo,
+                    "titulo": _extrair_titulo_markdown(conteudo, caminho_md.stem),
                 },
             )
         )
 
-    # Varre recursivamente todos os arquivos .pdf (incluindo subpastas como pdfs/)
     for caminho_pdf in sorted(base_path.rglob("*.pdf")):
         try:
-            # Carrega cada página do PDF separadamente usando PyPDFLoader
-            loader = PyPDFLoader(str(caminho_pdf))
-            paginas = loader.load()
-            for pagina in paginas:
+            for pagina in PyPDFLoader(str(caminho_pdf)).load():
                 texto_pagina = pagina.page_content.strip()
                 if not texto_pagina:
                     continue
-                # Preserva o número da página e o nome do PDF nos metadados
                 documentos.append(
                     Document(
                         page_content=texto_pagina,
@@ -80,89 +75,87 @@ def carregar_documentos_base(diretorio_base: str | None = None) -> list[Document
                     )
                 )
         except Exception as erro:
-            # Registra aviso sem abortar a ingestão dos demais arquivos caso um PDF esteja corrompido ou protegido
             print(f"[AVISO] Falha ao ler PDF '{caminho_pdf.name}': {erro}")
 
     return documentos
 
 
-# Divide os documentos carregados em chunks menores preservando parágrafos e seções
 def dividir_em_chunks(documentos: list[Document]) -> list[Document]:
-    # Configura o splitter com tamanho de 600 caracteres, sobreposição de 100 e separadores hierárquicos
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=600,
         chunk_overlap=100,
         separators=["\n## ", "\n### ", "\n\n", "\n", " "],
     )
     chunks = splitter.split_documents(documentos)
-
-    # Garante que cada chunk mantenha o título da seção ou do arquivo nos metadados
     for indice, chunk in enumerate(chunks):
         chunk.metadata["chunk_id"] = indice
         if "titulo" not in chunk.metadata:
             chunk.metadata["titulo"] = _extrair_titulo_markdown(
                 chunk.page_content, chunk.metadata.get("fonte", "documento")
             )
-
     return chunks
 
 
-# Indexa os chunks no ChromaDB persistente e retorna o objeto vectorstore
+def _criar_vectorstore(embeddings: HuggingFaceEmbeddings) -> PGVector:
+    return PGVector(
+        embeddings=embeddings,
+        collection_name=settings.colecao_vetorial,
+        connection=obter_engine(),
+        use_jsonb=True,
+    )
+
+
+def contar_vetores() -> int:
+    with get_pool().connection() as conn:
+        linha = conn.execute(
+            """SELECT COUNT(*) FROM langchain_pg_embedding e
+               JOIN langchain_pg_collection c ON c.uuid = e.collection_id
+               WHERE c.name = %s""",
+            (settings.colecao_vetorial,),
+        ).fetchone()
+    return int(linha[0])
+
+
+# Indexa os chunks no PostgreSQL/pgvector (idempotente e seguro com várias réplicas)
 def indexar_base_conhecimento(
     forcar_reindexacao: bool = False,
     embeddings: HuggingFaceEmbeddings | None = None,
-) -> Chroma:
+) -> PGVector:
     emb = embeddings or obter_embeddings()
-    persist_dir = Path(settings.chroma_dir)
-    persist_dir.mkdir(parents=True, exist_ok=True)
+    with advisory_lock(LOCK_INGESTAO):
+        vectorstore = _criar_vectorstore(emb)
+        existentes = contar_vetores()
+        if existentes > 0 and not forcar_reindexacao:
+            return vectorstore
 
-    # Abre a coleção persistida no ChromaDB
-    vectorstore = Chroma(
-        collection_name="bedarce_conhecimento",
-        embedding_function=emb,
-        persist_directory=str(persist_dir),
-    )
+        if forcar_reindexacao and existentes > 0:
+            vectorstore.delete_collection()
+            vectorstore.create_collection()
 
-    # Verifica quantos vetores já existem na coleção para evitar reprocessamento desnecessário
-    quantidade_existente = vectorstore._collection.count()
-    if quantidade_existente > 0 and not forcar_reindexacao:
-        return vectorstore
-
-    # Se forçado a reindexar e já houver dados, limpa a coleção antes de reinserir
-    if forcar_reindexacao and quantidade_existente > 0:
-        ids_existentes = vectorstore._collection.get()["ids"]
-        if ids_existentes:
-            vectorstore._collection.delete(ids=ids_existentes)
-
-    # Executa as etapas de carregamento e chunking dos arquivos .md e .pdf
-    documentos = carregar_documentos_base()
-    chunks = dividir_em_chunks(documentos)
-
-    # Adiciona os chunks ao banco vetorial apenas se houver conteúdo extraído
-    if chunks:
-        vectorstore.add_documents(chunks)
-        print(
-            f"[INGESTAO] Indexados {len(chunks)} chunks de {len(documentos)} documentos/páginas em '{persist_dir}'."
-        )
-    else:
-        print("[AVISO] Nenhum documento válido encontrado para indexar.")
-
+        documentos = carregar_documentos_base()
+        chunks = dividir_em_chunks(documentos)
+        if chunks:
+            vectorstore.add_documents(chunks)
+            print(f"[INGESTAO] {len(chunks)} chunks de {len(documentos)} documentos/páginas indexados no pgvector.")
+        else:
+            print("[AVISO] Nenhum documento válido encontrado para indexar.")
     return vectorstore
 
 
-# Garante que a base vetorial esteja pronta ao iniciar o serviço e permite execução via linha de comando
-def garantir_base_vetorial(forcar_reindexacao: bool = False) -> Chroma:
-    return indexar_base_conhecimento(forcar_reindexacao=forcar_reindexacao)
+# Devolve o vectorstore já pronto (cache em memória, sem recarregar modelo a cada requisição)
+def garantir_base_vetorial(forcar_reindexacao: bool = False) -> PGVector:
+    if _estado["vectorstore"] is not None and not forcar_reindexacao:
+        return _estado["vectorstore"]
+    with _lock:
+        if _estado["vectorstore"] is None or forcar_reindexacao:
+            _estado["vectorstore"] = indexar_base_conhecimento(forcar_reindexacao)
+        return _estado["vectorstore"]
 
 
-# Permite rodar este arquivo diretamente no terminal para testar ou reindexar a base
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Ingestão da base de conhecimento BEDARCE no ChromaDB.")
-    parser.add_argument(
-        "--reindex",
-        action="store_true",
-        help="Recria os embeddings e reindexa todos os arquivos .md e .pdf do zero.",
-    )
+    parser = argparse.ArgumentParser(description="Ingestão da base de conhecimento BEDARCE no pgvector.")
+    parser.add_argument("--reindex", action="store_true", help="Recria embeddings e reindexa tudo.")
     args = parser.parse_args()
-    store = garantir_base_vetorial(forcar_reindexacao=args.reindex)
-    print(f"[OK] Total de vetores na coleção 'bedarce_conhecimento': {store._collection.count()}")
+    inicializar_schema()
+    garantir_base_vetorial(forcar_reindexacao=args.reindex)
+    print(f"[OK] Total de vetores na coleção '{settings.colecao_vetorial}': {contar_vetores()}")
