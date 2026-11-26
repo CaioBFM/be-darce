@@ -92,32 +92,6 @@ internalApp.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', service: 'gateway-internal' });
 });
 
-internalApp.get('/v1/services/:service/:operation', async (req, res) => {
-  const { service, operation } = req.params;
-  const target = serviceTargets[service];
-
-  if (!target || !['health', 'db'].includes(operation)) {
-    return res.status(404).json({
-      status: 'error',
-      message: 'Serviço ou operação de diagnóstico não encontrado.',
-    });
-  }
-
-  try {
-    const response = await fetch(`${target}/${operation}`, {
-      signal: AbortSignal.timeout(5000),
-    });
-    const body = await response.json();
-    return res.status(response.status).json(body);
-  } catch (error) {
-    console.error(`Falha no Gateway interno para ${service}:`, error.message);
-    return res.status(502).json({
-      status: 'error',
-      message: `Não foi possível alcançar ${service} pelo Gateway interno.`,
-    });
-  }
-});
-
 async function encaminharGamificacao(req, res, { servico, caminho, metodo }) {
   const target = serviceTargets[servico];
   const query = new URLSearchParams(req.query).toString();
@@ -165,6 +139,43 @@ internalApp.get('/v1/services/gamificacao-leitura/usuarios/me/progresso', (req, 
     caminho: '/v1/usuarios/me/progresso',
     metodo: 'GET',
   });
+});
+
+internalApp.get('/v1/services/gamificacao-leitura/trilhas', (req, res) => encaminharGamificacao(req, res, {
+  servico: 'gamificacao-leitura', caminho: '/v1/trilhas', metodo: 'GET',
+}));
+
+internalApp.get('/v1/services/gamificacao-leitura/trilhas/:id/etapas/:etapaId', (req, res) => encaminharGamificacao(req, res, {
+  servico: 'gamificacao-leitura',
+  caminho: `/v1/trilhas/${encodeURIComponent(req.params.id)}/etapas/${encodeURIComponent(req.params.etapaId)}`,
+  metodo: 'GET',
+}));
+
+// Mantém o diagnóstico depois das rotas de produto para não interceptar consultas específicas.
+internalApp.get('/v1/services/:service/:operation', async (req, res) => {
+  const { service, operation } = req.params;
+  const target = serviceTargets[service];
+
+  if (!target || !['health', 'db'].includes(operation)) {
+    return res.status(404).json({
+      status: 'error',
+      message: 'Serviço ou operação de diagnóstico não encontrado.',
+    });
+  }
+
+  try {
+    const response = await fetch(`${target}/${operation}`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    const body = await response.json();
+    return res.status(response.status).json(body);
+  } catch (error) {
+    console.error(`Falha no Gateway interno para ${service}:`, error.message);
+    return res.status(502).json({
+      status: 'error',
+      message: `Não foi possível alcançar ${service} pelo Gateway interno.`,
+    });
+  }
 });
 
 app.listen(port, '0.0.0.0', () => {
