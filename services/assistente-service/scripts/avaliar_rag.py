@@ -3,19 +3,21 @@ import time
 from pathlib import Path
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from src.agente import executar_agente
 from src.config import settings
 from src.llm_factory import criar_modelo_llm
-from src.metricas import estimar_tokens_e_custo
+from src.metricas import MetricasCallback, estimar_tokens_e_custo
 from src.rag import consultar_rag_com_fontes
+from src.resiliencia import executar_com_resiliencia
 
-# Define as 5 perguntas de avaliação para comparar LLM pura, RAG e Agente
+# Perguntas de domínio para comparar a mesma LLM sem recuperação e com RAG.
 PERGUNTAS_AVALIACAO = [
     "Quais são os principais gatilhos emocionais associados ao Transtorno do Jogo segundo a base da plataforma?",
+    "Como a BEDARCE organiza o apoio e as trilhas educativas para pessoas em recuperação?",
+    "Que estratégias da TCC podem ajudar a lidar com impulsos e prevenir recaídas em apostas?",
+    "Qual é o papel da rede de apoio e da mentoria na recuperação de apostas?",
+    "Quais impactos sociais das apostas online são descritos nos materiais da base?",
 ]
 
-# Define pausa de 65s para resetar a janela TPM da Groq e k=1 para reduzir consumo de tokens
-_PAUSA_ENTRE_PERGUNTAS_SEGUNDOS = 65.0
 _TOP_K_AVALIACAO = 1
 _ARQUIVO_SAIDA = Path(__file__).resolve().parent.parent / "avaliacao_mensagens.jsonl"
 
@@ -29,21 +31,6 @@ def _anexar_registro(registro: dict, caminho: Path = _ARQUIVO_SAIDA) -> None:
         arquivo.flush()
 
 
-# Invoca uma função com espera segura caso o plano gratuito da Groq atinja o limite de TPM (429)
-def _chamar_com_espera_tpm(operacao, max_tentativas: int = 3):
-    for tentativa in range(1, max_tentativas + 1):
-        try:
-            return operacao()
-        except Exception as erro:
-            msg = str(erro).lower()
-            eh_rate_limit = "429" in msg or "rate limit" in msg or "tokens per minute" in msg
-            if not eh_rate_limit or tentativa == max_tentativas:
-                raise
-            # Aguarda 25s antes de tentar novamente para liberar tokens na janela de 1 minuto
-            print(f"[RATE LIMIT] Aguardando 25s para liberar TPM (tentativa {tentativa}/{max_tentativas})...")
-            time.sleep(25.0)
-
-
 # Executa uma pergunta na LLM pura (sem RAG, sem tools e sem agente)
 def _executar_llm_pura(pergunta: str, llm) -> dict:
     prompt_direto = ChatPromptTemplate.from_messages([
@@ -52,13 +39,17 @@ def _executar_llm_pura(pergunta: str, llm) -> dict:
     ])
     chain = prompt_direto | llm | StrOutputParser()
 
+    metricas = MetricasCallback()
     inicio = time.perf_counter()
-    resposta = _chamar_com_espera_tpm(lambda: chain.invoke({"pergunta": pergunta}))
+    resposta = executar_com_resiliencia(
+        lambda: chain.invoke({"pergunta": pergunta}, config={"callbacks": [metricas]})
+    )
     latencia_ms = round((time.perf_counter() - inicio) * 1000, 2)
 
     tokens_info = estimar_tokens_e_custo(
         texto_entrada=pergunta,
         texto_saida=resposta,
+        usage_metadata=metricas.usage_metadata,
         modelo=settings.llm_model,
     )
     return {
@@ -68,32 +59,7 @@ def _executar_llm_pura(pergunta: str, llm) -> dict:
     }
 
 
-# Executa uma pergunta pelo agente LangChain com tools e regras do sistema
-def _executar_modo_agente(pergunta: str, usuario_id: str = "paciente-001") -> dict:
-    inicio = time.perf_counter()
-    resultado = _chamar_com_espera_tpm(
-        lambda: executar_agente(
-            mensagem=pergunta,
-            usuario_id=f"avaliacao-{usuario_id}",
-        )
-    )
-    latencia_ms = round((time.perf_counter() - inicio) * 1000, 2)
-
-    resposta_texto = (resultado.get("resposta") or "").strip()
-    tokens_info = estimar_tokens_e_custo(
-        texto_entrada=pergunta,
-        texto_saida=resposta_texto,
-        modelo=settings.llm_model,
-    )
-    return {
-        "resposta": resposta_texto,
-        "tools_chamadas": resultado.get("tools_chamadas", []),
-        "latencia_ms": latencia_ms,
-        **tokens_info,
-    }
-
-
-# Executa as 5 perguntas gravando cada resposta individualmente no arquivo JSONL em tempo real
+# Executa as cinco perguntas e grava as duas respostas de cada uma, sem inventar resultados.
 def executar_avaliacao(limpar_arquivo_antes: bool = True) -> Path:
     if limpar_arquivo_antes and _ARQUIVO_SAIDA.exists():
         # Limpa execução anterior apenas no início de uma nova rodada completa
@@ -111,16 +77,22 @@ def executar_avaliacao(limpar_arquivo_antes: bool = True) -> Path:
             "pergunta": pergunta,
             "tipo_agente": "llm_pura",
             "resposta": dados_pura["resposta"],
-            "latencia_ms": dados_pura["latencia_ms"],
-            "tokens_entrada": dados_pura["tokens_entrada"],
-            "tokens_saida": dados_pura["tokens_saida"],
+            "fontes": [],
+            "latencia_total_ms": dados_pura["latencia_ms"],
+            **{chave: dados_pura[chave] for chave in (
+                "tokens_entrada", "tokens_saida", "tokens_totais",
+                "custo_estimado_usd", "custo_referencia_usd",
+            )},
         })
 
         # 2. Com RAG e gravação imediata
-        dados_rag = _chamar_com_espera_tpm(lambda p=pergunta: consultar_rag_com_fontes(p, k=_TOP_K_AVALIACAO))
+        dados_rag = executar_com_resiliencia(
+            lambda p=pergunta: consultar_rag_com_fontes(p, k=_TOP_K_AVALIACAO)
+        )
         tokens_rag = estimar_tokens_e_custo(
-            texto_entrada=pergunta,
+            texto_entrada=dados_rag.get("texto_entrada_estimativa", pergunta),
             texto_saida=dados_rag.get("resposta", ""),
+            usage_metadata=dados_rag.get("usage_metadata"),
             modelo=settings.llm_model,
         )
         _anexar_registro({
@@ -129,28 +101,13 @@ def executar_avaliacao(limpar_arquivo_antes: bool = True) -> Path:
             "tipo_agente": "com_rag",
             "resposta": (dados_rag.get("resposta") or "").strip(),
             "fontes": dados_rag.get("fontes", []),
-            "latencia_rag_ms": dados_rag.get("latencia_rag_ms", 0.0),
-            "tokens_entrada": tokens_rag["tokens_entrada"],
-            "tokens_saida": tokens_rag["tokens_saida"],
+            "latencia_recuperacao_ms": dados_rag.get("latencia_rag_ms", 0.0),
+            "latencia_total_ms": dados_rag.get("latencia_total_ms", 0.0),
+            **{chave: tokens_rag[chave] for chave in (
+                "tokens_entrada", "tokens_saida", "tokens_totais",
+                "custo_estimado_usd", "custo_referencia_usd",
+            )},
         })
-
-        # 3. Com Agente e gravação imediata
-        dados_agente = _executar_modo_agente(pergunta)
-        _anexar_registro({
-            "numero_pergunta": idx,
-            "pergunta": pergunta,
-            "tipo_agente": "com_agente",
-            "resposta": dados_agente["resposta"],
-            "tools_chamadas": dados_agente["tools_chamadas"],
-            "latencia_ms": dados_agente["latencia_ms"],
-            "tokens_entrada": dados_agente["tokens_entrada"],
-            "tokens_saida": dados_agente["tokens_saida"],
-        })
-
-        # Aguarda janela TPM entre perguntas, exceto após a última
-        if idx < len(PERGUNTAS_AVALIACAO):
-            print(f"[AVALIACAO] Aguardando {_PAUSA_ENTRE_PERGUNTAS_SEGUNDOS:.0f}s para resetar TPM...")
-            time.sleep(_PAUSA_ENTRE_PERGUNTAS_SEGUNDOS)
 
     print(f"[OK] Registro incremental concluído em '{_ARQUIVO_SAIDA}'.")
     return _ARQUIVO_SAIDA

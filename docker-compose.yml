@@ -265,7 +265,7 @@ services:
       COLECAO_VETORIAL: ${COLECAO_VETORIAL:-bedarce_conhecimento}
       CACHE_TTL_SEGUNDOS: ${CACHE_TTL_SEGUNDOS:-600}
       LLM_PROVIDER: ${LLM_PROVIDER:-groq}
-      LLM_MODEL: ${LLM_MODEL:-llama-3.3-70b-versatile}
+      LLM_MODEL: ${LLM_MODEL:-openai/gpt-oss-20b}
       LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.2}
       LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-15}
       LLM_FALLBACK_PROVIDER: ${LLM_FALLBACK_PROVIDER:-}
@@ -289,7 +289,7 @@ services:
       interval: 15s
       timeout: 3s
       retries: 5
-      start_period: 90s
+      start_period: 600s
     restart: unless-stopped
 
   bff-portal:

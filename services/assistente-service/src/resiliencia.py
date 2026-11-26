@@ -1,5 +1,8 @@
 import hashlib
+import re
 import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from threading import Lock
 from typing import Callable, TypeVar
 
@@ -14,6 +17,7 @@ T = TypeVar("T")
 
 _CIRCUIT_FALHAS_LIMITE = 3
 _CIRCUIT_COOLDOWN_SEGUNDOS = 30.0
+_BACKOFF_EXPONENCIAL = wait_exponential(multiplier=1, min=1, max=4)
 
 
 # Falha transitória = elegível para retry com backoff exponencial
@@ -26,6 +30,58 @@ def _eh_erro_transitorio(erro: BaseException) -> bool:
         "connection", "temporarily unavailable",
     )
     return any(termo in mensagem for termo in indicadores)
+
+
+def _status_http(erro: BaseException) -> int | None:
+    resposta = getattr(erro, "response", None)
+    status = getattr(resposta, "status_code", None) or getattr(erro, "status_code", None)
+    if status is not None:
+        try:
+            return int(status)
+        except (TypeError, ValueError):
+            return None
+    return 429 if re.search(r"\b429\b", str(erro)) else None
+
+
+def _retry_after_segundos(erro: BaseException) -> float | None:
+    resposta = getattr(erro, "response", None)
+    headers = getattr(resposta, "headers", {}) or {}
+    valor = headers.get("retry-after") or headers.get("Retry-After")
+
+    if valor is not None:
+        try:
+            return max(0.0, float(valor))
+        except (TypeError, ValueError):
+            try:
+                data_retry = parsedate_to_datetime(str(valor))
+                if data_retry.tzinfo is None:
+                    data_retry = data_retry.replace(tzinfo=timezone.utc)
+                return max(0.0, (data_retry - datetime.now(timezone.utc)).total_seconds())
+            except (TypeError, ValueError, OverflowError):
+                pass
+
+    for nome in ("retry_after", "retry_after_seconds"):
+        valor = getattr(erro, nome, None)
+        if valor is not None:
+            try:
+                return max(0.0, float(valor))
+            except (TypeError, ValueError):
+                pass
+
+    # Alguns clientes incluem a recomendação no texto, por exemplo "try again in 2.5s".
+    correspondencia = re.search(r"(?:retry|try again)\s+(?:after|in)\s+(\d+(?:\.\d+)?)\s*s", str(erro), re.I)
+    if correspondencia:
+        return float(correspondencia.group(1))
+    return None
+
+
+def _aguardar_retry(retry_state) -> float:
+    erro = retry_state.outcome.exception() if retry_state.outcome else None
+    if erro is not None and _status_http(erro) == 429:
+        informado = _retry_after_segundos(erro)
+        if informado is not None:
+            return informado
+    return _BACKOFF_EXPONENCIAL(retry_state)
 
 
 # Cache de respostas com TTL guardado no PostgreSQL do próprio serviço (compartilhado entre réplicas)
@@ -118,7 +174,7 @@ def executar_com_resiliencia(operacao: Callable[[], T]) -> T:
 
     retrier = Retrying(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=4),
+        wait=_aguardar_retry,
         retry=retry_if_exception(_eh_erro_transitorio),
         reraise=True,
     )

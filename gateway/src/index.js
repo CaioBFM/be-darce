@@ -108,11 +108,19 @@ internalApp.post('/v1/services/saga-orquestrador/promocoes-mentor', express.json
 
 async function encaminharAssistente(req, res, { caminho, metodo }) {
   const target = serviceTargets.assistente;
+  const usuarioId = req.get('X-Usuario-Id');
   try {
     const response = await fetch(`${target}${caminho}`, {
       method: metodo,
+      ...(usuarioId ? { headers: { 'X-Usuario-Id': usuarioId } } : {}),
       ...(metodo === 'POST'
-        ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req.body || {}) }
+        ? {
+            headers: {
+              'Content-Type': 'application/json',
+              ...(usuarioId ? { 'X-Usuario-Id': usuarioId } : {}),
+            },
+            body: JSON.stringify(req.body || {}),
+          }
         : {}),
       signal: AbortSignal.timeout(110000),
     });
@@ -200,6 +208,25 @@ internalApp.get('/v1/services/gamificacao-leitura/trilhas/:id/etapas/:etapaId', 
   caminho: `/v1/trilhas/${encodeURIComponent(req.params.id)}/etapas/${encodeURIComponent(req.params.etapaId)}`,
   metodo: 'GET',
 }));
+
+// Rotas explícitas de leitura: os microsserviços continuam acessíveis somente pela rede interna.
+internalApp.get('/v1/services/usuarios/usuarios/:id', (req, res) => encaminharGamificacao(req, res, {
+  servico: 'usuarios',
+  caminho: `/v1/usuarios/${encodeURIComponent(req.params.id)}`,
+  metodo: 'GET',
+}));
+
+internalApp.get('/v1/services/comunidade/mentores', (req, res) => encaminharGamificacao(req, res, {
+  servico: 'comunidade',
+  caminho: '/v1/mentores',
+  metodo: 'GET',
+}));
+
+internalApp.get('/v1/services/assistente/assistente/historico', (req, res) => encaminharAssistente(
+  req,
+  res,
+  { caminho: '/v1/assistente/historico', metodo: 'GET' },
+));
 
 // Mantém o diagnóstico depois das rotas de produto para não interceptar consultas específicas.
 internalApp.get('/v1/services/:service/:operation', async (req, res) => {

@@ -1,11 +1,11 @@
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from src.agente import executar_agente, gerar_boas_vindas
+from src.agente import executar_agente, gerar_boas_vindas, obter_historico_persistido
 from src.config import settings
 from src.db import inicializar_schema, ping_banco
 from src.ingestao import garantir_base_vetorial
@@ -73,17 +73,37 @@ def db() -> JSONResponse:
 
 
 @app.post("/v1/assistente/boas-vindas")
-def post_boas_vindas(payload: BoasVindasRequest) -> dict:
+def post_boas_vindas(
+    payload: BoasVindasRequest,
+    x_usuario_id: str | None = Header(default=None, alias="X-Usuario-Id"),
+) -> dict:
     inicio = time.perf_counter()
-    resultado = gerar_boas_vindas(usuario_id=payload.usuario_id, nome_usuario=payload.nome_usuario)
+    usuario_id = (x_usuario_id or "").strip()
+    if not usuario_id:
+        raise HTTPException(status_code=400, detail="Identificação do usuário obrigatória.")
+    resultado = gerar_boas_vindas(usuario_id=usuario_id, nome_usuario=payload.nome_usuario)
     resultado["latencia_total_ms"] = round((time.perf_counter() - inicio) * 1000, 2)
     return resultado
 
 
+@app.get("/v1/assistente/historico")
+def get_historico(x_usuario_id: str | None = Header(default=None, alias="X-Usuario-Id")) -> dict:
+    usuario_id = (x_usuario_id or "").strip()
+    if not usuario_id:
+        raise HTTPException(status_code=400, detail="Identificação do usuário obrigatória.")
+    return {"mensagens": obter_historico_persistido(usuario_id)}
+
+
 @app.post("/v1/assistente/mensagem")
-def post_mensagem(payload: MensagemRequest) -> dict:
+def post_mensagem(
+    payload: MensagemRequest,
+    x_usuario_id: str | None = Header(default=None, alias="X-Usuario-Id"),
+) -> dict:
     inicio_total = time.perf_counter()
-    chave_cache = CacheRespostaTTL.gerar_chave(payload.usuario_id, payload.mensagem)
+    usuario_id = (x_usuario_id or "").strip()
+    if not usuario_id:
+        raise HTTPException(status_code=400, detail="Identificação do usuário obrigatória.")
+    chave_cache = CacheRespostaTTL.gerar_chave(usuario_id, payload.mensagem)
 
     # Camada 1: cache
     item_cache = cache_respostas.obter(chave_cache)
@@ -103,7 +123,7 @@ def post_mensagem(payload: MensagemRequest) -> dict:
         resultado = executar_com_resiliencia(
             lambda: executar_agente(
                 mensagem=payload.mensagem,
-                usuario_id=payload.usuario_id,
+                usuario_id=usuario_id,
                 historico_externo=payload.historico,
             )
         )
@@ -132,7 +152,7 @@ def post_mensagem(payload: MensagemRequest) -> dict:
             "resposta": resposta_texto,
             "tools_chamadas": resultado.get("tools_chamadas", []),
             "fontes": resultado.get("fontes", []),
-            "usuario_id": payload.usuario_id,
+            "usuario_id": usuario_id,
             "cache_hit": False,
             "fallback_utilizado": False,
             "metricas": metricas_exec,
@@ -156,7 +176,7 @@ def post_mensagem(payload: MensagemRequest) -> dict:
             "resposta": fallback["resposta"],
             "tools_chamadas": fallback["tools_chamadas"],
             "fontes": fallback["fontes"],
-            "usuario_id": payload.usuario_id,
+            "usuario_id": usuario_id,
             "cache_hit": False,
             "fallback_utilizado": True,
             "metricas": metricas_fb,

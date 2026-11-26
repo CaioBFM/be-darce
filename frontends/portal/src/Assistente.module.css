@@ -26,10 +26,45 @@
   border: 1px solid rgba(128, 128, 128, 0.25);
 }
 
-.chatMsg p {
+.chatMsg > p,
+.markdown p {
   margin: 0;
-  white-space: pre-wrap;
   line-height: 1.45;
+}
+
+.markdown > * + * {
+  margin-top: 0.65rem;
+}
+
+.markdown ul,
+.markdown ol {
+  margin: 0.35rem 0;
+  padding-left: 1.35rem;
+}
+
+.markdown table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+.markdown th,
+.markdown td {
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.markdown pre {
+  overflow-x: auto;
+  padding: 8px;
+  border-radius: 6px;
+  background: rgba(128, 128, 128, 0.15);
+}
+
+.markdown a {
+  overflow-wrap: anywhere;
 }
 
 .chatUsuario {
