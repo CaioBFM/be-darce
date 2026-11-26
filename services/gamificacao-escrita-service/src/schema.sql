@@ -26,6 +26,14 @@ CREATE TABLE IF NOT EXISTS etapas (
   CONSTRAINT etapas_trilha_ordem_unica UNIQUE (trilha_id, ordem) DEFERRABLE INITIALLY DEFERRED
 );
 
+-- Inscrição de usuários em trilhas (usada também pela SAGA de promoção a mentor).
+CREATE TABLE IF NOT EXISTS inscricoes_trilhas (
+  usuario_id TEXT NOT NULL,
+  trilha_id TEXT NOT NULL REFERENCES trilhas (id),
+  inscrito_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (usuario_id, trilha_id)
+);
+
 CREATE TABLE IF NOT EXISTS pontuacoes (
   usuario_id    TEXT PRIMARY KEY,
   pontos        INTEGER     NOT NULL DEFAULT 0 CHECK (pontos >= 0),
